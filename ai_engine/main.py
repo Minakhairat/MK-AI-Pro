@@ -43,16 +43,49 @@ try:
 except ImportError:
     YOLO = None  # type: ignore
 
+try:
+    import timm  # type: ignore
+except ImportError:
+    timm = None  # type: ignore
+
+try:
+    import transformers  # type: ignore
+except ImportError:
+    transformers = None  # type: ignore
+
+try:
+    import onnx  # type: ignore
+except ImportError:
+    onnx = None  # type: ignore
+
+try:
+    import onnxruntime  # type: ignore
+except ImportError:
+    onnxruntime = None  # type: ignore
+
+try:
+    import paddleocr  # type: ignore
+except ImportError:
+    paddleocr = None  # type: ignore
+
 app = FastAPI(
     title="MK AI Training Engine",
     description="Computer Vision AI Training & Inference Service by MK Tech",
-    version="1.0.0-phase3",
+    version="2.0.0-modelhub",
 )
 
 START_TIME = time.time()
 CHECKPOINT_ROOT = Path(os.environ.get("MK_CHECKPOINT_DIR", "./checkpoints")).resolve()
 CHECKPOINT_ROOT.mkdir(parents=True, exist_ok=True)
 JOB_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
+
+TIMM_MODEL_MAP = {
+    "convnextv2_tiny": "convnextv2_tiny.fcmae_ft_in1k",
+    "eva02_tiny": "eva02_tiny_patch14_224.mim_in22k_ft_in1k",
+    "dinov2_vits14": "vit_small_patch14_dinov2.lvd142m",
+    "swin_tiny": "swin_tiny_patch4_window7_224.ms_in22k_ft_in1k",
+    "vit_base_16": "vit_base_patch16_224.augreg2_in21k_ft_in1k",
+}
 
 
 class HardwareStatus(BaseModel):
@@ -63,6 +96,11 @@ class HardwareStatus(BaseModel):
     torch_version: Optional[str]
     torchvision_installed: bool
     ultralytics_installed: bool
+    timm_installed: bool
+    transformers_installed: bool
+    onnx_installed: bool
+    onnxruntime_installed: bool
+    paddleocr_installed: bool
     cuda_available: bool
     cuda_device_count: int
     cuda_devices: List[str]
@@ -90,6 +128,11 @@ class TrainJobRequest(BaseModel):
     datasetYamlPath: Optional[str] = Field(default=None, max_length=500)
     datasetDirPath: Optional[str] = Field(default=None, max_length=500)
     hyperparameters: HyperparametersPayload = Field(default_factory=HyperparametersPayload)
+    fineTuningStrategy: Literal["frozen_head", "partial_finetune", "full_finetune"] = "frozen_head"
+    scheduler: Literal["none", "cosine", "step"] = "cosine"
+    weightDecay: float = Field(default=0.0001, ge=0.0, le=0.2)
+    multiLabel: bool = False
+    exportOnnx: bool = False
     resumeCheckpointPath: Optional[str] = Field(default=None, max_length=500)
 
 
@@ -160,6 +203,11 @@ def detect_hardware() -> HardwareStatus:
         torch_version=torch_version,
         torchvision_installed=torchvision is not None,
         ultralytics_installed=YOLO is not None,
+        timm_installed=timm is not None,
+        transformers_installed=transformers is not None,
+        onnx_installed=onnx is not None,
+        onnxruntime_installed=onnxruntime is not None,
+        paddleocr_installed=paddleocr is not None,
         cuda_available=cuda_available,
         cuda_device_count=cuda_device_count,
         cuda_devices=cuda_devices,
@@ -182,14 +230,19 @@ def _run_python_training_worker(job: JobState) -> None:
         job.status = "running"
         job.logs.append(f"[{job.job_id}] Initializing real Python worker for {job.req.architecture}")
 
-        if job.req.taskType == "object_detection" and job.req.architecture in ("yolo11n", "yolov8n"):
+        if job.req.taskType == "object_detection" and job.req.architecture in ("yolo11n", "yolo11s", "yolov8n", "rtdetr_l"):
             if YOLO is None:
                 raise RuntimeError("Ultralytics YOLO is not installed on this Python worker.")
             if not job.req.datasetYamlPath or not Path(job.req.datasetYamlPath).exists():
                 raise RuntimeError("Valid datasetYamlPath pointing to YOLO data.yaml is required.")
 
             job_dir = _safe_job_dir(job.job_id)
-            weights_ref = job.req.resumeCheckpointPath or f"{job.req.architecture}.pt"
+            if job.req.resumeCheckpointPath:
+                weights_ref = job.req.resumeCheckpointPath
+            elif job.req.architecture == "rtdetr_l":
+                weights_ref = "rtdetr-l.pt"
+            else:
+                weights_ref = f"{job.req.architecture}.pt"
             model = YOLO(weights_ref)
 
             def on_fit_epoch_end(trainer: Any) -> None:
@@ -226,6 +279,7 @@ def _run_python_training_worker(job: JobState) -> None:
                 imgsz=job.req.hyperparameters.inputSize,
                 batch=job.req.hyperparameters.batchSize,
                 lr0=job.req.hyperparameters.learningRate,
+                weight_decay=job.req.weightDecay,
                 project=str(job_dir),
                 name="run",
                 exist_ok=True,
@@ -234,6 +288,12 @@ def _run_python_training_worker(job: JobState) -> None:
             best_pt = job_dir / "run" / "weights" / "best.pt"
             if best_pt.exists():
                 job.checkpoint_path = str(best_pt)
+                if job.req.exportOnnx:
+                    try:
+                        exported_path = YOLO(str(best_pt)).export(format="onnx")
+                        job.logs.append(f"ONNX exported: {exported_path}")
+                    except Exception as onnx_exc:
+                        job.logs.append(f"ONNX export skipped: {onnx_exc}")
             job.status = "completed"
             return
 
@@ -295,21 +355,69 @@ def _run_python_training_worker(job: JobState) -> None:
         val_loader = DataLoader(val_ds, batch_size=effective_batch, shuffle=False)
         num_classes = len(active_classes)
 
-        if job.req.architecture == "efficientnet_b0":
-            net = models.efficientnet_b0(weights=None)
+        if job.req.architecture in TIMM_MODEL_MAP:
+            if timm is None:
+                raise RuntimeError("timm is required for transformer/ConvNeXt foundation backbones.")
+            timm_name = TIMM_MODEL_MAP[job.req.architecture]
+            net = timm.create_model(timm_name, pretrained=True, num_classes=num_classes)
+        elif job.req.architecture == "efficientnetv2_s":
+            net = models.efficientnet_v2_s(weights=models.EfficientNet_V2_S_Weights.DEFAULT)
+            net.classifier[1] = nn.Linear(net.classifier[1].in_features, num_classes)
+        elif job.req.architecture == "efficientnet_b0":
+            net = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
             net.classifier[1] = nn.Linear(net.classifier[1].in_features, num_classes)
         else:
-            net = models.mobilenet_v3_large(weights=None)
+            net = models.mobilenet_v3_large(weights=models.MobileNet_V3_Large_Weights.DEFAULT)
             net.classifier[3] = nn.Linear(net.classifier[3].in_features, num_classes)
 
-        net = net.to(device)
-        criterion = nn.CrossEntropyLoss()
-        if job.req.hyperparameters.optimizer == "sgd":
-            optimizer = torch.optim.SGD(net.parameters(), lr=job.req.hyperparameters.learningRate, momentum=0.9)
-        elif job.req.hyperparameters.optimizer == "rmsprop":
-            optimizer = torch.optim.RMSprop(net.parameters(), lr=job.req.hyperparameters.learningRate)
+        # Apply fineTuningStrategy (keeping BatchNorm frozen during transfer learning)
+        params_list = list(net.named_parameters())
+        if job.req.fineTuningStrategy == "frozen_head":
+            for pname, param in params_list:
+                is_head = any(k in pname for k in ("head.", "fc.", "classifier."))
+                param.requires_grad = is_head
+        elif job.req.fineTuningStrategy == "partial_finetune":
+            cutoff = max(0, len(params_list) - max(6, len(params_list) // 4))
+            for idx_p, (pname, param) in enumerate(params_list):
+                is_head = any(k in pname for k in ("head.", "fc.", "classifier."))
+                param.requires_grad = is_head or idx_p >= cutoff
         else:
-            optimizer = torch.optim.Adam(net.parameters(), lr=job.req.hyperparameters.learningRate)
+            for _, param in params_list:
+                param.requires_grad = True
+
+        trainable_params = [p for p in net.parameters() if p.requires_grad]
+        if not trainable_params:
+            raise RuntimeError("No trainable parameters found after applying fineTuningStrategy.")
+
+        net = net.to(device)
+        criterion = nn.BCEWithLogitsLoss() if job.req.multiLabel else nn.CrossEntropyLoss()
+        if job.req.hyperparameters.optimizer == "sgd":
+            optimizer = torch.optim.SGD(
+                trainable_params,
+                lr=job.req.hyperparameters.learningRate,
+                momentum=0.9,
+                weight_decay=job.req.weightDecay,
+            )
+        elif job.req.hyperparameters.optimizer == "rmsprop":
+            optimizer = torch.optim.RMSprop(
+                trainable_params,
+                lr=job.req.hyperparameters.learningRate,
+                weight_decay=job.req.weightDecay,
+            )
+        else:
+            optimizer = torch.optim.AdamW(
+                trainable_params,
+                lr=job.req.hyperparameters.learningRate,
+                weight_decay=job.req.weightDecay,
+            )
+
+        lr_scheduler = None
+        if job.req.scheduler == "cosine":
+            lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, job.total_epochs))
+        elif job.req.scheduler == "step":
+            lr_scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer, step_size=max(1, job.total_epochs // 3), gamma=0.5
+            )
 
         job_dir = _safe_job_dir(job.job_id)
         best_val_loss = float("inf")
@@ -338,7 +446,11 @@ def _run_python_training_worker(job: JobState) -> None:
                 xb, yb = xb.to(device), yb.to(device)
                 optimizer.zero_grad()
                 logits = net(xb)
-                loss = criterion(logits, yb)
+                if job.req.multiLabel:
+                    xb_targets = torch.nn.functional.one_hot(yb, num_classes=num_classes).float()
+                    loss = criterion(logits, xb_targets)
+                else:
+                    loss = criterion(logits, yb)
                 if not torch.isfinite(loss):
                     raise RuntimeError(f"Non-finite training loss detected at epoch {epoch}, step {step_idx}.")
                 loss.backward()
@@ -403,6 +515,18 @@ def _run_python_training_worker(job: JobState) -> None:
                     torch.save({"epoch": epoch, "model_state": net.state_dict(), "classes": active_classes}, ckpt)
                     job.checkpoint_path = str(ckpt)
 
+            if lr_scheduler is not None:
+                lr_scheduler.step()
+
+        if job.req.exportOnnx and job.checkpoint_path and onnx is not None:
+            try:
+                dummy_in = torch.randn(1, 3, img_sz, img_sz, device=device)
+                onnx_path = job_dir / "best.onnx"
+                torch.onnx.export(net, dummy_in, str(onnx_path), opset_version=17)
+                job.logs.append(f"ONNX model exported: {onnx_path}")
+            except Exception as onnx_exc:
+                job.logs.append(f"ONNX export failed: {onnx_exc}")
+
         job.status = "completed"
     except InterruptedError:
         job.status = "cancelled"
@@ -419,7 +543,7 @@ def health() -> Dict[str, Any]:
     return {
         "status": "online",
         "service": "mk-ai-training-engine",
-        "phase": "phase3_real_training_engine",
+        "phase": "v2_model_hub",
         "uptime_seconds": round(time.time() - START_TIME, 2),
         "hardware": hw.model_dump(),
     }
@@ -428,44 +552,52 @@ def health() -> Dict[str, Any]:
 @app.get("/capabilities")
 def capabilities() -> Dict[str, Any]:
     hw = detect_hardware()
+    torch_ready = hw.torch_installed and hw.torchvision_installed
+    timm_ready = hw.torch_installed and hw.timm_installed
+    yolo_ready = hw.torch_installed and hw.ultralytics_installed
+    transformers_ready = hw.torch_installed and hw.transformers_installed
+
+    supported_architectures: List[str] = []
+    if torch_ready:
+        supported_architectures.extend(["mobilenet_v3_large", "efficientnet_b0", "efficientnetv2_s", "fasterrcnn_mobilenet_v3"])
+    if timm_ready:
+        supported_architectures.extend(["convnextv2_tiny", "eva02_tiny", "dinov2_vits14", "swin_tiny", "vit_base_16", "dinov2_patchcore"])
+    if yolo_ready:
+        supported_architectures.extend(["yolo11n", "yolo11s", "yolov8n", "rtdetr_l", "yolo11n_seg", "yolo11n_pose", "sam2_hiera_tiny"])
+    if transformers_ready:
+        supported_architectures.extend(["clip_vit_b32_zeroshot", "segformer_b0", "trocr_base", "videomae_base"])
+    if hw.paddleocr_installed and hw.onnxruntime_installed:
+        supported_architectures.append("paddleocr_v4")
+
     return {
-        "engine_version": "v1.0",
-        "phase": "phase3_real_training_engine",
-        "torch_ready": hw.torch_installed and hw.torchvision_installed,
-        "yolo_ready": hw.ultralytics_installed,
-        "tasks": [
-            {
-                "id": "image_classification",
-                "version": "v1.0",
-                "status": "active" if hw.torch_installed and hw.torchvision_installed else "missing_dependencies",
-                "architectures": [
-                    {"id": "mobilenet_v3_large", "name": "MobileNetV3-Large", "license": "BSD-3-Clause (torchvision)"},
-                    {"id": "efficientnet_b0", "name": "EfficientNet-B0", "license": "BSD-3-Clause (torchvision)"},
-                ],
-            },
-            {
-                "id": "object_detection",
-                "version": "v1.0",
-                "status": "active" if hw.ultralytics_installed else "missing_dependencies",
-                "architectures": [
-                    {"id": "yolo11n", "name": "YOLO11n", "license": "AGPL-3.0 (Ultralytics)"},
-                    {"id": "yolov8n", "name": "YOLOv8n", "license": "AGPL-3.0 (Ultralytics)"},
-                    {"id": "fasterrcnn_mobilenet_v3", "name": "Faster R-CNN MobileNetV3", "license": "BSD-3-Clause (torchvision)"},
-                ],
-            },
-        ],
+        "engine_version": "v2.0",
+        "phase": "v2_model_hub",
+        "torch_ready": torch_ready,
+        "yolo_ready": yolo_ready,
+        "timm_ready": timm_ready,
+        "transformers_ready": transformers_ready,
+        "onnx_ready": hw.onnx_installed,
+        "onnxruntime_ready": hw.onnxruntime_installed,
+        "paddleocr_ready": hw.paddleocr_installed,
+        "hardware": hw.model_dump(),
+        "supported_architectures": supported_architectures,
     }
 
 
 @app.post("/jobs/train")
 def start_training_job(req: TrainJobRequest) -> Dict[str, Any]:
     hw = detect_hardware()
-    if req.architecture in ("yolo11n", "yolov8n") and not hw.ultralytics_installed:
+    if req.architecture in ("yolo11n", "yolo11s", "yolov8n", "rtdetr_l") and not hw.ultralytics_installed:
         raise HTTPException(
             status_code=503,
             detail="Ultralytics is not installed on this Python worker. Install ai_engine/requirements.txt first.",
         )
-    if req.architecture not in ("yolo11n", "yolov8n") and not (hw.torch_installed and hw.torchvision_installed):
+    if req.architecture in TIMM_MODEL_MAP and not (hw.torch_installed and hw.timm_installed):
+        raise HTTPException(
+            status_code=503,
+            detail="PyTorch + timm are not installed on this Python worker. Install ai_engine/requirements.txt first.",
+        )
+    if req.architecture not in ("yolo11n", "yolo11s", "yolov8n", "rtdetr_l") and not (hw.torch_installed and hw.torchvision_installed):
         raise HTTPException(
             status_code=503,
             detail="PyTorch/torchvision not installed on this Python worker. Install ai_engine/requirements.txt first.",

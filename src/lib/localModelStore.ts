@@ -1,5 +1,11 @@
 import * as tf from '@tensorflow/tfjs';
-import type { EvaluationReport, TrainedModel } from '../types/domain.ts';
+import type {
+  EvaluationReport,
+  FineTuningStrategy,
+  PreprocessMode,
+  TrainedModel,
+} from '../types/domain.ts';
+import { getPreprocessModeForArchitecture } from './modelRegistry.ts';
 
 const DB_NAME = 'mk_ai_models_v1';
 const DB_VERSION = 1;
@@ -13,6 +19,10 @@ export interface StoredModelArtifact {
   inputSize: number;
   taskType: 'image_classification' | 'object_detection';
   architecture: string;
+  preprocessMode?: PreprocessMode;
+  fineTuningStrategy?: FineTuningStrategy;
+  multiLabel?: boolean;
+  checkpointSha256?: string;
   modelTopology: unknown;
   weightSpecs: tf.io.WeightsManifestEntry[];
   weightData: ArrayBuffer;
@@ -60,6 +70,10 @@ export async function saveTfModelToIndexedDb(params: {
   taskType: 'image_classification' | 'object_detection';
   architecture: string;
   model: tf.LayersModel;
+  preprocessMode?: PreprocessMode;
+  fineTuningStrategy?: FineTuningStrategy;
+  multiLabel?: boolean;
+  checkpointSha256?: string;
 }): Promise<{ sizeBytes: number }> {
   let capturedSize = 0;
 
@@ -75,6 +89,11 @@ export async function saveTfModelToIndexedDb(params: {
         inputSize: params.inputSize,
         taskType: params.taskType,
         architecture: params.architecture,
+        preprocessMode:
+          params.preprocessMode ?? getPreprocessModeForArchitecture(params.architecture),
+        fineTuningStrategy: params.fineTuningStrategy,
+        multiLabel: params.multiLabel,
+        checkpointSha256: params.checkpointSha256,
         modelTopology: artifacts.modelTopology,
         weightSpecs: artifacts.weightSpecs || [],
         weightData: buffer,
@@ -196,14 +215,20 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-export async function exportPortableMkModelBundle(model: TrainedModel): Promise<{
-  bundleJson: string;
-  filename: string;
-} | null> {
-  const record = await getStoredModelRecord(model.id);
-  if (!record) return null;
+function base64ToArrayBufferLocal(base64: string): ArrayBuffer {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
 
-  const bundle = {
+export function buildPortableBundlePayload(
+  model: TrainedModel,
+  record: StoredModelArtifact
+) {
+  const preprocessMode: PreprocessMode =
+    record.preprocessMode ?? getPreprocessModeForArchitecture(model.architecture);
+  return {
     format: 'mk-ai-model-bundle/v1',
     platform: 'MK AI — by MK Tech',
     exportedAt: new Date().toISOString(),
@@ -221,6 +246,9 @@ export async function exportPortableMkModelBundle(model: TrainedModel): Promise<
       weightSizeBytes: model.weightSizeBytes,
       datasetVersion: model.datasetVersion,
       onDeviceCompatible: model.onDeviceCompatible,
+      fineTuningStrategy: record.fineTuningStrategy ?? null,
+      multiLabel: Boolean(record.multiLabel),
+      checkpointSha256: record.checkpointSha256 ?? null,
       metrics: {
         accuracy: model.accuracy,
         precision: model.precision,
@@ -233,18 +261,64 @@ export async function exportPortableMkModelBundle(model: TrainedModel): Promise<
     preprocessing: {
       colorSpace: 'RGB',
       resize: [model.inputSize, model.inputSize],
-      normalization: 'divide_by_255_[0..1]',
+      preprocessMode,
+      normalization:
+        preprocessMode === 'neg1_pos1'
+          ? 'neg1_to_1_[(px/127.5)-1]'
+          : 'divide_by_255_[0..1]',
       gridSize: model.taskType === 'object_detection' ? 5 : null,
     },
     modelTopology: record.modelTopology,
     weightSpecs: record.weightSpecs,
     weightDataBase64: arrayBufferToBase64(record.weightData),
   };
+}
+
+export async function exportPortableMkModelBundle(model: TrainedModel): Promise<{
+  bundleJson: string;
+  filename: string;
+} | null> {
+  const record = await getStoredModelRecord(model.id);
+  if (!record) return null;
+
+  const bundle = buildPortableBundlePayload(model, record);
 
   return {
     bundleJson: JSON.stringify(bundle, null, 2),
     filename: `${model.architecture}_${model.id}.mkmodel.json`,
   };
+}
+
+export async function verifyExportedBundleReload(bundleJson: string): Promise<{
+  valid: boolean;
+  outputShape: number[];
+  sampleValues: number[];
+}> {
+  const parsed = JSON.parse(bundleJson) as ReturnType<typeof buildPortableBundlePayload>;
+  const weightData = base64ToArrayBufferLocal(parsed.weightDataBase64);
+  const reloaded = await tf.loadLayersModel(
+    tf.io.fromMemory({
+      modelTopology: parsed.modelTopology as Record<string, unknown>,
+      weightSpecs: parsed.weightSpecs,
+      weightData,
+    })
+  );
+  try {
+    const inputSize = parsed.modelMeta.inputSize;
+    const dummy = tf.zeros([1, inputSize, inputSize, 3]);
+    const out = reloaded.predict(dummy) as tf.Tensor;
+    const data = Array.from(await out.data());
+    const outputShape = out.shape;
+    dummy.dispose();
+    out.dispose();
+    return {
+      valid: data.length > 0 && data.every((v) => Number.isFinite(v)),
+      outputShape,
+      sampleValues: data.slice(0, 6),
+    };
+  } finally {
+    reloaded.dispose();
+  }
 }
 
 function escapeCsvCell(v: string | number): string {
@@ -346,12 +420,21 @@ export function generateIntegrationSnippets(model: TrainedModel): {
   pythonPy: string;
 } {
   const classesLiteral = JSON.stringify(model.classes);
-  const browserTs = `// MK AI by MK Tech — TensorFlow.js Browser Inference Starter
+  const preprocessMode = getPreprocessModeForArchitecture(model.architecture);
+  const tfjsNormChain =
+    preprocessMode === 'neg1_pos1' ? '.div(127.5).sub(1.0)' : '.div(255.0)';
+  const pyNormExpr =
+    preprocessMode === 'neg1_pos1'
+      ? '(np.asarray(img, dtype=np.float32) / 127.5) - 1.0'
+      : 'np.asarray(img, dtype=np.float32) / 255.0';
+
+  const browserTs = `// MK AI by MK Tech — TensorFlow.js Browser Inference Starter (${model.architecture})
 import * as tf from '@tensorflow/tfjs';
 
 export const MODEL_CLASSES = ${classesLiteral};
 export const INPUT_SIZE = ${model.inputSize};
 export const TASK_TYPE = '${model.taskType}';
+export const PREPROCESS_MODE = '${preprocessMode}';
 
 export async function runMkAiInference(modelUrl: string, imageEl: HTMLImageElement | HTMLCanvasElement) {
   const model = await tf.loadLayersModel(modelUrl);
@@ -373,7 +456,7 @@ export async function runMkAiInference(modelUrl: string, imageEl: HTMLImageEleme
     return tf.browser
       .fromPixels(canvas)
       .toFloat()
-      .div(255.0)
+      ${tfjsNormChain}
       .expandDims(0);
   });
   const output = model.predict(input) as tf.Tensor;
@@ -393,14 +476,15 @@ import numpy as np
 CLASSES = ${classesLiteral}
 INPUT_SIZE = ${model.inputSize}
 TASK_TYPE = "${model.taskType}"
+PREPROCESS_MODE = "${preprocessMode}"
 
 def preprocess_image(image_path: str) -> np.ndarray:
     img = Image.open(image_path).convert("RGB").resize((INPUT_SIZE, INPUT_SIZE))
-    arr = np.asarray(img, dtype=np.float32) / 255.0
+    arr = ${pyNormExpr}
     return np.expand_dims(arr, axis=0)
 
-# Load weights exported from MK AI Model Hub (.pt for PyTorch/YOLO or .mkmodel.json)
-print(f"Loaded spec for {TASK_TYPE} with {len(CLASSES)} classes: {CLASSES}")
+# Load weights exported from MK AI Model Hub (.pt/.onnx for PyTorch/YOLO or .mkmodel.json)
+print(f"Loaded spec for {TASK_TYPE} ({PREPROCESS_MODE}) with {len(CLASSES)} classes: {CLASSES}")
 `;
 
   return { browserTs, pythonPy };

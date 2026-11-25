@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   Boxes,
+  Cpu,
   FolderKanban,
   Globe,
   LayoutDashboard,
@@ -38,6 +39,7 @@ export function Sidebar({
   const navItems: { id: AppSection; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'dashboard', label: t.nav.dashboard, icon: LayoutDashboard },
     { id: 'projects', label: t.nav.projects, icon: FolderKanban },
+    { id: 'model_hub', label: t.nav.modelHub, icon: Cpu },
     { id: 'workspaces', label: t.nav.workspaces, icon: Boxes },
     { id: 'architecture', label: t.nav.architecture, icon: Network },
     { id: 'settings', label: t.nav.settings, icon: Shield },

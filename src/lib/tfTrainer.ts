@@ -5,6 +5,17 @@ import {
 } from './datasetUtils.ts';
 import { getMediaBlob, listStoredDatasetBlobIds } from './localMediaStore.ts';
 import { saveTfModelToIndexedDb } from './localModelStore.ts';
+import {
+  getModelCatalogEntry,
+  getPreprocessModeForArchitecture,
+  isPretrainedTransferArchitecture,
+  MODEL_CATALOG,
+} from './modelRegistry.ts';
+import {
+  COCO_90_LABELS,
+  downloadAndCachePretrainedCheckpoint,
+  loadCachedCheckpointLayersModel,
+} from './pretrainedWeightManager.ts';
 import type {
   BatchEvalSampleResult,
   BatchEvaluationResult,
@@ -13,106 +24,38 @@ import type {
   DatasetItem,
   EpochMetricPoint,
   EvaluationSplitTarget,
+  FineTuningStrategy,
   InferencePrediction,
   ModelArchitectureSpec,
   OptimizerType,
   PerClassMetric,
+  PreprocessMode,
   SanityTestResult,
+  SchedulerType,
   TrainingDiagnostics,
   TrainingHyperparameters,
+  TrainingOptionsExtended,
   V1TaskType,
 } from '../types/domain.ts';
 
-export const MODEL_ARCHITECTURES: ModelArchitectureSpec[] = [
-  {
-    id: 'mk_mobilenet_sep',
-    name: 'MK Mobile-Depthwise CNN (TF.js)',
-    taskType: 'image_classification',
-    backendEngine: 'tfjs_browser',
-    license: 'Apache-2.0 (In-Browser)',
-    recommendedInputSize: 96,
-    onDeviceCompatible: true,
-    summaryEn: 'Depthwise-separable convolutional network trained locally in WebGL/CPU. Mobile & offline PWA ready.',
-    summaryAr: 'شبكة تلافيفية خفيفة (Depthwise-Separable) تتدرب محلياً عبر WebGL/CPU ومناسبة لتطبيقات الموبايل والأوفلاين.',
-  },
-  {
-    id: 'mk_convnet_deep',
-    name: 'MK Multi-Stage ConvNet (TF.js)',
-    taskType: 'image_classification',
-    backendEngine: 'tfjs_browser',
-    license: 'Apache-2.0 (In-Browser)',
-    recommendedInputSize: 128,
-    onDeviceCompatible: true,
-    summaryEn: '3-stage convolutional feature extractor with BatchNorm and Dropout trained directly on your device.',
-    summaryAr: 'شبكة تلافيفية متعددة المراحل مع BatchNorm و Dropout تتدرب مباشرة على جهازك بدون إرسال الصور.',
-  },
-  {
-    id: 'mobilenet_v3_large',
-    name: 'MobileNetV3-Large (PyTorch)',
-    taskType: 'image_classification',
-    backendEngine: 'python_fastapi',
-    license: 'BSD-3-Clause (torchvision)',
-    recommendedInputSize: 224,
-    onDeviceCompatible: true,
-    summaryEn: 'Server-side PyTorch MobileNetV3-Large worker (requires connected Python AI Engine).',
-    summaryAr: 'نموذج MobileNetV3-Large عبر خادم PyTorch (يتطلب اتصال خدمة Python AI Engine).',
-  },
-  {
-    id: 'efficientnet_b0',
-    name: 'EfficientNet-B0 (PyTorch)',
-    taskType: 'image_classification',
-    backendEngine: 'python_fastapi',
-    license: 'BSD-3-Clause (torchvision)',
-    recommendedInputSize: 224,
-    onDeviceCompatible: true,
-    summaryEn: 'High-accuracy EfficientNet-B0 classifier on Python GPU/CPU worker.',
-    summaryAr: 'نموذج EfficientNet-B0 عالي الدقة على خادم Python GPU/CPU.',
-  },
-  {
-    id: 'mk_yolo_grid',
-    name: 'MK Grid-YOLO Detector (TF.js)',
-    taskType: 'object_detection',
-    backendEngine: 'tfjs_browser',
-    license: 'Apache-2.0 (In-Browser)',
-    recommendedInputSize: 128,
-    onDeviceCompatible: true,
-    summaryEn: 'Spatial 5×5 grid object detector predicting bounding boxes, objectness, and classes locally in WebGL/CPU.',
-    summaryAr: 'كاشف عناصر شبكي 5×5 يتعلم إحداثيات الصناديق والفئات محلياً على جهازك عبر WebGL/CPU.',
-  },
-  {
-    id: 'yolo11n',
-    name: 'YOLO11n (Ultralytics Python)',
-    taskType: 'object_detection',
-    backendEngine: 'python_fastapi',
-    license: 'AGPL-3.0 (Ultralytics)',
-    recommendedInputSize: 640,
-    onDeviceCompatible: true,
-    summaryEn: 'Ultralytics YOLO11 nano real-time detector via connected Python AI Engine.',
-    summaryAr: 'نموذج YOLO11n فائق السرعة عبر خادم Python AI Engine المتصل.',
-  },
-  {
-    id: 'yolov8n',
-    name: 'YOLOv8n (Ultralytics Python)',
-    taskType: 'object_detection',
-    backendEngine: 'python_fastapi',
-    license: 'AGPL-3.0 (Ultralytics)',
-    recommendedInputSize: 640,
-    onDeviceCompatible: true,
-    summaryEn: 'Ultralytics YOLOv8 nano detector via connected Python AI Engine.',
-    summaryAr: 'نموذج YOLOv8n عبر خادم Python AI Engine المتصل.',
-  },
-  {
-    id: 'fasterrcnn_mobilenet_v3',
-    name: 'Faster R-CNN MobileNetV3 (PyTorch)',
-    taskType: 'object_detection',
-    backendEngine: 'python_fastapi',
-    license: 'BSD-3-Clause (torchvision)',
-    recommendedInputSize: 320,
-    onDeviceCompatible: false,
-    summaryEn: 'Two-stage precision detector executed on server PyTorch GPU/CPU worker.',
-    summaryAr: 'كاشف ثنائي المراحل عالي الدقة يُنفذ عبر خادم PyTorch GPU/CPU.',
-  },
-];
+export const MODEL_ARCHITECTURES: ModelArchitectureSpec[] = MODEL_CATALOG.filter(
+  (spec) =>
+    spec.capabilities.training &&
+    (spec.supportedTasks.includes('image_classification') ||
+      spec.supportedTasks.includes('object_detection'))
+).map((spec) => ({
+  id: spec.id,
+  name: spec.name,
+  taskType: spec.supportedTasks.includes('object_detection')
+    ? 'object_detection'
+    : 'image_classification',
+  backendEngine: spec.backendEngine,
+  license: spec.license,
+  recommendedInputSize: spec.recommendedInputSize,
+  onDeviceCompatible: spec.browserCompatible || spec.mobileCompatible,
+  summaryEn: spec.summaryEn,
+  summaryAr: spec.summaryAr,
+}));
 
 export function getRecommendedHyperparameters(
   taskType: V1TaskType,
@@ -138,11 +81,206 @@ export function createOptimizer(name: OptimizerType, lr: number): tf.Optimizer {
   return tf.train.adam(lr);
 }
 
+export function computeScheduledLearningRate(
+  baseLr: number,
+  epoch: number,
+  totalEpochs: number,
+  scheduler: SchedulerType = 'none'
+): number {
+  if (scheduler === 'none' || totalEpochs <= 1) return baseLr;
+  if (scheduler === 'cosine') {
+    const minLr = baseLr * 0.05;
+    const progress = Math.min(1, Math.max(0, (epoch - 1) / Math.max(1, totalEpochs - 1)));
+    return minLr + 0.5 * (baseLr - minLr) * (1 + Math.cos(Math.PI * progress));
+  }
+  // step decay every ~1/3 of training epochs
+  const stepSpan = Math.max(2, Math.floor(totalEpochs / 3));
+  const stepCount = Math.floor((epoch - 1) / stepSpan);
+  return baseLr * Math.pow(0.5, stepCount);
+}
+
+function setOptimizerLearningRate(optimizer: tf.Optimizer, lr: number): void {
+  const mutable = optimizer as unknown as { learningRate?: number };
+  if (typeof mutable.learningRate === 'number') {
+    mutable.learningRate = lr;
+  }
+}
+
+export function disposeCompositeAndBaseModel(
+  composite?: tf.LayersModel | null,
+  baseModel?: tf.LayersModel | null
+): void {
+  const disposedLayers = new Set<tf.layers.Layer>();
+  if (composite) {
+    for (const layer of composite.layers) {
+      disposedLayers.add(layer);
+    }
+    try {
+      composite.dispose();
+    } catch {
+      for (const layer of composite.layers) {
+        try {
+          if (!(layer as unknown as { isDisposed?: boolean }).isDisposed) {
+            layer.dispose();
+          }
+        } catch {
+          // Layer already disposed elsewhere
+        }
+      }
+    }
+  }
+  if (baseModel) {
+    if (!composite) {
+      try {
+        baseModel.dispose();
+        return;
+      } catch {
+        // Fall through to safe per-layer disposal for partially disposed models
+      }
+    }
+    for (const layer of baseModel.layers) {
+      if (disposedLayers.has(layer)) continue;
+      try {
+        if (!(layer as unknown as { isDisposed?: boolean }).isDisposed) {
+          layer.dispose();
+        }
+      } catch {
+        // Layer already disposed elsewhere
+      }
+    }
+  }
+}
+
+export function buildPretrainedTransferClassifier(params: {
+  baseModel: tf.LayersModel;
+  numClasses: number;
+  strategy: FineTuningStrategy;
+  multiLabel?: boolean;
+  weightDecay?: number;
+}): {
+  model: tf.LayersModel;
+  backboneLayerCount: number;
+  unfrozenBackboneLayerCount: number;
+  trainableParamCount: number;
+  frozenBackboneParamCount: number;
+} {
+  const { baseModel, numClasses, strategy, multiLabel = false, weightDecay = 0 } = params;
+  const layers = baseModel.layers;
+  if (layers.length < 4) {
+    throw new Error('Base checkpoint does not expose enough layers for transfer learning.');
+  }
+
+  let featureLayer =
+    layers.find((l) => l.name === 'global_average_pooling2d_1') ??
+    [...layers]
+      .reverse()
+      .find(
+        (l) =>
+          l.name.toLowerCase().includes('global_average_pooling') ||
+          l.getClassName().toLowerCase().includes('globalaveragepooling')
+      ) ??
+    layers[Math.max(0, layers.length - 5)];
+
+  // Freeze all backbone layers initially
+  for (const layer of layers) {
+    layer.trainable = false;
+  }
+
+  const isBatchNorm = (layer: tf.layers.Layer) =>
+    layer.name.toLowerCase().includes('_bn') ||
+    layer.getClassName().toLowerCase().includes('batchnormalization');
+
+  const featureIdx = layers.indexOf(featureLayer);
+  const backboneLayers = layers.slice(0, featureIdx + 1);
+  const nonBnBackboneLayers = backboneLayers.filter((l) => !isBatchNorm(l) && l.countParams() > 0);
+
+  let unfrozenBackboneLayerCount = 0;
+  if (strategy === 'partial_finetune') {
+    const numToUnfreeze = Math.max(4, Math.ceil(nonBnBackboneLayers.length * 0.25));
+    const toUnfreeze = nonBnBackboneLayers.slice(-numToUnfreeze);
+    for (const l of toUnfreeze) {
+      l.trainable = true;
+      unfrozenBackboneLayerCount += 1;
+    }
+  } else if (strategy === 'full_finetune') {
+    for (const l of nonBnBackboneLayers) {
+      l.trainable = true;
+      unfrozenBackboneLayerCount += 1;
+    }
+  }
+
+  let featOut = featureLayer.output as tf.SymbolicTensor;
+  if (featOut.shape.length > 2) {
+    featOut = tf.layers
+      .flatten({ name: 'mk_transfer_flatten' })
+      .apply(featOut) as tf.SymbolicTensor;
+  }
+
+  const reg = weightDecay > 0 ? tf.regularizers.l2({ l2: weightDecay }) : undefined;
+  const drop1 = tf.layers
+    .dropout({ rate: 0.2, name: 'mk_head_dropout1' })
+    .apply(featOut) as tf.SymbolicTensor;
+  const denseHidden = tf.layers
+    .dense({
+      units: 128,
+      activation: 'relu',
+      kernelInitializer: 'heNormal',
+      kernelRegularizer: reg,
+      name: 'mk_head_dense',
+    })
+    .apply(drop1) as tf.SymbolicTensor;
+  const drop2 = tf.layers
+    .dropout({ rate: 0.15, name: 'mk_head_dropout2' })
+    .apply(denseHidden) as tf.SymbolicTensor;
+  const preds = tf.layers
+    .dense({
+      units: numClasses,
+      activation: multiLabel ? 'sigmoid' : 'softmax',
+      kernelInitializer: 'glorotNormal',
+      kernelRegularizer: reg,
+      name: 'mk_head_out',
+    })
+    .apply(drop2) as tf.SymbolicTensor;
+
+  const composite = tf.model({
+    inputs: baseModel.inputs,
+    outputs: preds,
+    name: 'mk_transfer_classifier',
+  });
+
+  // Ensure BatchNorm stays strictly frozen inside the composed model graph
+  for (const layer of composite.layers) {
+    if (isBatchNorm(layer)) {
+      layer.trainable = false;
+    }
+  }
+
+  const trainableParamCount = composite.trainableWeights.reduce(
+    (sum, w) => sum + (w.shape ?? []).reduce<number>((a, b) => a * (b ?? 1), 1),
+    0
+  );
+  const frozenBackboneParamCount = Math.max(0, composite.countParams() - trainableParamCount);
+
+  return {
+    model: composite,
+    backboneLayerCount: backboneLayers.length,
+    unfrozenBackboneLayerCount,
+    trainableParamCount,
+    frozenBackboneParamCount,
+  };
+}
+
 export function buildClassificationModel(
   architecture: string,
   inputSize: number,
-  numClasses: number
+  numClasses: number,
+  options?: { multiLabel?: boolean; weightDecay?: number }
 ): tf.LayersModel {
+  const outputActivation = options?.multiLabel ? 'sigmoid' : 'softmax';
+  const l2Reg =
+    options?.weightDecay && options.weightDecay > 0
+      ? tf.regularizers.l2({ l2: options.weightDecay })
+      : undefined;
   const model = tf.sequential();
 
   if (architecture === 'mk_convnet_deep') {
@@ -212,13 +350,15 @@ export function buildClassificationModel(
         units: 48,
         activation: 'relu',
         kernelInitializer: 'heNormal',
+        kernelRegularizer: l2Reg,
       })
     );
     model.add(
       tf.layers.dense({
         units: numClasses,
-        activation: 'softmax',
+        activation: outputActivation,
         kernelInitializer: 'glorotNormal',
+        kernelRegularizer: l2Reg,
       })
     );
     return model;
@@ -285,13 +425,15 @@ export function buildClassificationModel(
       units: 32,
       activation: 'relu',
       kernelInitializer: 'heNormal',
+      kernelRegularizer: l2Reg,
     })
   );
   model.add(
     tf.layers.dense({
       units: numClasses,
-      activation: 'softmax',
+      activation: outputActivation,
       kernelInitializer: 'glorotNormal',
+      kernelRegularizer: l2Reg,
     })
   );
   return model;
@@ -790,7 +932,7 @@ async function waitWhilePaused(hooks: TrainingControlHooks): Promise<'continue' 
 }
 
 function measureWeightL1Delta(prevSnapshot: Float32Array[], model: tf.LayersModel): number {
-  const curr = model.getWeights();
+  const curr = model.trainableWeights.map((w) => w.read());
   let delta = 0;
   for (let i = 0; i < curr.length; i++) {
     const p = prevSnapshot[i];
@@ -804,19 +946,32 @@ function measureWeightL1Delta(prevSnapshot: Float32Array[], model: tf.LayersMode
 }
 
 function captureWeightSnapshot(model: tf.LayersModel): Float32Array[] {
-  return model.getWeights().map((w) => new Float32Array(w.dataSync() as Float32Array));
+  return model.trainableWeights.map((w) => new Float32Array(w.read().dataSync() as Float32Array));
+}
+
+function countTrainableScalars(model: tf.LayersModel): number {
+  return model.trainableWeights.reduce(
+    (sum, w) => sum + (w.shape ?? []).reduce<number>((a, b) => a * (b ?? 1), 1),
+    0
+  );
 }
 
 function computeClassifierGradNorm(
   model: tf.LayersModel,
   xSample: tf.Tensor4D,
-  yOneHotSample: tf.Tensor2D
+  yOneHotSample: tf.Tensor2D,
+  multiLabel: boolean = false
 ): { lossValue: number; gradL1Norm: number } {
   const trainableVars = model.trainableWeights.map((w) => w.read() as tf.Variable);
   return tf.tidy(() => {
     const { value, grads } = tf.variableGrads(() => {
       const probs = model.apply(xSample, { training: true }) as tf.Tensor2D;
       const clipped = tf.clipByValue(probs, 1e-7, 1 - 1e-7);
+      if (multiLabel) {
+        const pos = tf.mul(yOneHotSample, tf.log(clipped));
+        const neg = tf.mul(tf.sub(1, yOneHotSample), tf.log(tf.sub(1, clipped)));
+        return tf.neg(tf.mean(tf.add(pos, neg))) as tf.Scalar;
+      }
       return tf.neg(tf.mean(tf.sum(tf.mul(yOneHotSample, tf.log(clipped)), 1))) as tf.Scalar;
     }, trainableVars);
     let gradNorm = 0;
@@ -859,6 +1014,7 @@ export async function trainClassifierCore(params: {
   yValIndices: number[];
   classes: string[];
   hyperparameters: TrainingHyperparameters;
+  options?: TrainingOptionsExtended;
   hooks: TrainingControlHooks;
 }): Promise<{
   status: 'completed' | 'cancelled';
@@ -867,8 +1023,21 @@ export async function trainClassifierCore(params: {
   bestValMetric: number;
   diagnostics: TrainingDiagnostics;
 }> {
-  const { model, xTrain, yTrainOneHot, xVal, yValOneHot, yValIndices, classes, hyperparameters, hooks } =
-    params;
+  const {
+    model,
+    xTrain,
+    yTrainOneHot,
+    xVal,
+    yValOneHot,
+    yValIndices,
+    classes,
+    hyperparameters,
+    options,
+    hooks,
+  } = params;
+
+  const multiLabel = Boolean(options?.multiLabel);
+  const scheduler: SchedulerType = options?.scheduler ?? 'none';
 
   if (model.trainableWeights.length === 0) {
     throw new Error('Model has zero trainable parameters.');
@@ -880,7 +1049,7 @@ export async function trainClassifierCore(params: {
   const optimizer = createOptimizer(hyperparameters.optimizer, hyperparameters.learningRate);
   model.compile({
     optimizer,
-    loss: 'categoricalCrossentropy',
+    loss: multiLabel ? 'binaryCrossentropy' : 'categoricalCrossentropy',
     metrics: ['accuracy'],
   });
 
@@ -889,7 +1058,7 @@ export async function trainClassifierCore(params: {
   const probeCheck = tf.tidy(() => {
     const xProbe = xTrain.slice([0, 0, 0, 0], [probeCount, -1, -1, -1]) as tf.Tensor4D;
     const yProbe = yTrainOneHot.slice([0, 0], [probeCount, -1]) as tf.Tensor2D;
-    return computeClassifierGradNorm(model, xProbe, yProbe);
+    return computeClassifierGradNorm(model, xProbe, yProbe, multiLabel);
   });
 
   if (!Number.isFinite(probeCheck.lossValue)) {
@@ -898,11 +1067,14 @@ export async function trainClassifierCore(params: {
   if (!(probeCheck.gradL1Norm > 0)) {
     throw new Error('Diagnostic failure: Initial backpropagation produced zero gradients across all trainable layers.');
   }
+  const trainableScalarCount = countTrainableScalars(model);
   hooks.onLog(
-    `[Diagnostic] Trainable params: ${model.countParams().toLocaleString()} · Initial loss: ${probeCheck.lossValue.toFixed(4)} · Grad L1: ${probeCheck.gradL1Norm.toFixed(4)}`
+    `[Diagnostic] Trainable params: ${trainableScalarCount.toLocaleString()} / ${model.countParams().toLocaleString()} total · Initial loss: ${probeCheck.lossValue.toFixed(4)} · Grad L1: ${probeCheck.gradL1Norm.toFixed(4)}`
   );
 
-  const classWeight = computeBalancedClassWeights(yTrainOneHot, classes.length);
+  const classWeight = multiLabel
+    ? undefined
+    : computeBalancedClassWeights(yTrainOneHot, classes.length);
   if (classWeight) {
     hooks.onLog(`[Diagnostic] Class imbalance balancing weights enabled.`);
   }
@@ -926,7 +1098,7 @@ export async function trainClassifierCore(params: {
         bestEpoch: Math.max(1, bestEpoch),
         bestValMetric: Math.max(0, bestValMetric),
         diagnostics: {
-          trainableParamCount: model.countParams(),
+          trainableParamCount: trainableScalarCount,
           initialGradientNorm: Number(probeCheck.gradL1Norm.toFixed(6)),
           epoch1ParamDelta: Number(epoch1ParamDelta.toFixed(6)),
           hasNonZeroGradients: probeCheck.gradL1Norm > 0,
@@ -934,6 +1106,17 @@ export async function trainClassifierCore(params: {
           parametersUpdated: epoch1ParamDelta > 0,
         },
       };
+    }
+
+    const epochLr = computeScheduledLearningRate(
+      hyperparameters.learningRate,
+      epoch,
+      hyperparameters.epochs,
+      scheduler
+    );
+    setOptimizerLearningRate(optimizer, epochLr);
+    if (scheduler !== 'none' && (epoch === 1 || epoch === hyperparameters.epochs || epoch % 4 === 0)) {
+      hooks.onLog(`[Scheduler:${scheduler}] Epoch ${epoch} LR = ${epochLr.toExponential(2)}`);
     }
 
     const beforeSnapshot = epoch === 1 ? captureWeightSnapshot(model) : null;
@@ -950,7 +1133,7 @@ export async function trainClassifierCore(params: {
     if (beforeSnapshot) {
       epoch1ParamDelta = measureWeightL1Delta(beforeSnapshot, model);
       if (!(epoch1ParamDelta > 0)) {
-        throw new Error('Diagnostic failure: Model weights did not change after Epoch 1 optimizer step (frozen parameters).');
+        throw new Error('Diagnostic failure: Trainable weights did not change after Epoch 1 optimizer step.');
       }
       hooks.onLog(`[Diagnostic] Epoch 1 weight update ΔW L1 = ${epoch1ParamDelta.toFixed(4)}`);
     }
@@ -1031,7 +1214,7 @@ export async function trainClassifierCore(params: {
     bestEpoch: Math.max(1, bestEpoch),
     bestValMetric: Math.max(0, bestValMetric),
     diagnostics: {
-      trainableParamCount: model.countParams(),
+      trainableParamCount: trainableScalarCount,
       initialGradientNorm: Number(probeCheck.gradL1Norm.toFixed(6)),
       epoch1ParamDelta: Number(epoch1ParamDelta.toFixed(6)),
       hasNonZeroGradients: probeCheck.gradL1Norm > 0,
@@ -1401,6 +1584,8 @@ export async function runOverfittingSanityTest(params: {
   inputSize: number;
   steps?: number;
   learningRate?: number;
+  baseModel?: tf.LayersModel;
+  fineTuningStrategy?: FineTuningStrategy;
 }): Promise<SanityTestResult> {
   await tf.ready();
   const details: string[] = [];
@@ -1415,11 +1600,13 @@ export async function runOverfittingSanityTest(params: {
     if (!params.ySubsetOneHot || !params.ySubsetIndices) {
       throw new Error('Classification sanity test requires ySubsetOneHot and ySubsetIndices.');
     }
-    const model = buildClassificationModel(
-      params.architecture,
-      params.inputSize,
-      params.classes.length
-    );
+    const model = params.baseModel
+      ? buildPretrainedTransferClassifier({
+          baseModel: params.baseModel,
+          numClasses: params.classes.length,
+          strategy: params.fineTuningStrategy ?? 'frozen_head',
+        }).model
+      : buildClassificationModel(params.architecture, params.inputSize, params.classes.length);
     const optimizer = tf.train.adam(params.learningRate ?? 0.002);
     model.compile({
       optimizer,
@@ -1480,7 +1667,7 @@ export async function runOverfittingSanityTest(params: {
         details,
       };
     } finally {
-      model.dispose();
+      disposeCompositeAndBaseModel(model, params.baseModel);
     }
   }
 
@@ -1580,8 +1767,17 @@ export async function runDatasetOverfittingSanityTest(params: {
   dataset: Dataset;
   items: DatasetItem[];
   inputSize: number;
+  fineTuningStrategy?: FineTuningStrategy;
 }): Promise<SanityTestResult> {
-  const { dataset, items, taskType, architecture, inputSize } = params;
+  const { dataset, items, taskType, architecture, fineTuningStrategy } = params;
+  const catalogSpec = getModelCatalogEntry(architecture);
+  if (catalogSpec && !catalogSpec.capabilities.training) {
+    throw new Error(`${catalogSpec.name} is an inference-only model and cannot be trained.`);
+  }
+  const preprocessMode = getPreprocessModeForArchitecture(architecture);
+  const effectiveInputSize = catalogSpec?.pretrainedAvailable
+    ? catalogSpec.recommendedInputSize
+    : params.inputSize;
   const classes = dataset.classes;
   if (classes.length === 0) {
     throw new Error('Dataset has no defined classes.');
@@ -1611,17 +1807,32 @@ export async function runDatasetOverfittingSanityTest(params: {
     throw new Error('Need at least 2 annotated samples with local images for overfitting sanity check.');
   }
 
+  let baseModel: tf.LayersModel | undefined;
+  if (
+    taskType === 'image_classification' &&
+    isPretrainedTransferArchitecture(architecture) &&
+    catalogSpec?.checkpointUrl
+  ) {
+    const ckpt = await downloadAndCachePretrainedCheckpoint({
+      catalogModelId: catalogSpec.id,
+      checkpointUrl: catalogSpec.checkpointUrl,
+      isGraphModel: false,
+    });
+    baseModel = await loadCachedCheckpointLayersModel(ckpt);
+  }
+
   const tensors: tf.Tensor3D[] = [];
   const validPicked: DatasetItem[] = [];
   for (const item of picked) {
     const blob = await getMediaBlob(item.id);
     if (!blob) continue;
-    tensors.push(await blobToNormalizedTensor(blob, inputSize, null));
+    tensors.push(await blobToNormalizedTensor(blob, effectiveInputSize, null, preprocessMode));
     validPicked.push(item);
   }
 
   if (validPicked.length < 2) {
     tensors.forEach((t) => t.dispose());
+    disposeCompositeAndBaseModel(undefined, baseModel);
     throw new Error('Local image blobs for selected sanity samples are missing from IndexedDB.');
   }
 
@@ -1640,8 +1851,10 @@ export async function runDatasetOverfittingSanityTest(params: {
           xSubset,
           ySubsetOneHot: yOH,
           ySubsetIndices: indices,
-          inputSize,
+          inputSize: effectiveInputSize,
           steps: 25,
+          baseModel,
+          fineTuningStrategy: fineTuningStrategy ?? 'frozen_head',
         });
       } finally {
         yOH.dispose();
@@ -1654,18 +1867,20 @@ export async function runDatasetOverfittingSanityTest(params: {
       classes,
       xSubset,
       boxesSubset: validPicked.map((it) => it.annotations),
-      inputSize,
+      inputSize: effectiveInputSize,
       steps: 28,
     });
   } finally {
     xSubset.dispose();
+    disposeCompositeAndBaseModel(undefined, baseModel);
   }
 }
 
-async function blobToNormalizedTensor(
+export async function blobToNormalizedTensor(
   blob: Blob,
   inputSize: number,
-  augmentConfig?: Dataset['augmentationConfig'] | null
+  augmentConfig?: Dataset['augmentationConfig'] | null,
+  preprocessMode: PreprocessMode = 'zero_one'
 ): Promise<tf.Tensor3D> {
   const url = URL.createObjectURL(blob);
   try {
@@ -1683,8 +1898,11 @@ async function blobToNormalizedTensor(
     });
 
     return tf.tidy(() => {
-      const raw = tf.browser.fromPixels(canvas);
-      return tf.div(tf.cast(raw, 'float32'), 255) as tf.Tensor3D;
+      const raw = tf.cast(tf.browser.fromPixels(canvas), 'float32');
+      if (preprocessMode === 'neg1_pos1') {
+        return tf.sub(tf.div(raw, 127.5), 1.0) as tf.Tensor3D;
+      }
+      return tf.div(raw, 255) as tf.Tensor3D;
     });
   } finally {
     URL.revokeObjectURL(url);
@@ -1724,12 +1942,41 @@ export async function runBrowserTrainingPipeline(params: {
   dataset: Dataset;
   items: DatasetItem[];
   hyperparameters: TrainingHyperparameters;
+  options?: TrainingOptionsExtended;
   hooks: TrainingControlHooks;
 }): Promise<BrowserTrainingResult> {
   await tf.ready();
   const backend = tf.getBackend() || 'cpu';
-  const hardwareSummary = `Browser TensorFlow.js (${backend.toUpperCase()})`;
-  params.hooks.onLog(`TensorFlow.js ready on backend: ${backend.toUpperCase()}`);
+  const catalogSpec = getModelCatalogEntry(params.architecture);
+
+  if (catalogSpec && !catalogSpec.capabilities.training) {
+    throw new Error(
+      `${catalogSpec.name} is strictly inference-only and cannot be trained.`
+    );
+  }
+  if (catalogSpec && catalogSpec.backendEngine !== 'tfjs_browser') {
+    throw new Error(
+      `${catalogSpec.name} requires the external Python AI Worker (${catalogSpec.requiredPythonPackages.join(', ')}).`
+    );
+  }
+
+  const preprocessMode: PreprocessMode =
+    params.options?.preprocessMode ?? catalogSpec?.preprocessMode ?? 'zero_one';
+  const fineTuningStrategy: FineTuningStrategy =
+    params.options?.fineTuningStrategy ??
+    (catalogSpec?.pretrainedAvailable ? 'frozen_head' : 'full_finetune');
+  const scheduler: SchedulerType = params.options?.scheduler ?? 'none';
+  const multiLabel = Boolean(params.options?.multiLabel);
+  const weightDecay = Number(params.options?.weightDecay ?? 0);
+
+  const effectiveInputSize = catalogSpec?.pretrainedAvailable
+    ? catalogSpec.recommendedInputSize
+    : params.hyperparameters.inputSize;
+
+  let hardwareSummary = `TF.js (${backend.toUpperCase()}) · ${preprocessMode}`;
+  params.hooks.onLog(
+    `TensorFlow.js ready (${backend.toUpperCase()}) · Input: ${effectiveInputSize}×${effectiveInputSize} · Norm: ${preprocessMode}`
+  );
 
   const classes = params.dataset.classes;
   if (classes.length === 0) {
@@ -1751,6 +1998,25 @@ export async function runBrowserTrainingPipeline(params: {
     throw new Error(validation.errors.join(' '));
   }
 
+  // Download & integrity-verify pretrained checkpoint BEFORE loading images if needed
+  let pretrainedBaseModel: tf.LayersModel | null = null;
+  let checkpointSha256: string | undefined;
+  if (
+    params.taskType === 'image_classification' &&
+    catalogSpec?.pretrainedAvailable &&
+    catalogSpec.checkpointUrl
+  ) {
+    const ckpt = await downloadAndCachePretrainedCheckpoint({
+      catalogModelId: catalogSpec.id,
+      checkpointUrl: catalogSpec.checkpointUrl,
+      isGraphModel: false,
+      onProgress: params.hooks.onLog,
+    });
+    checkpointSha256 = ckpt.sha256;
+    pretrainedBaseModel = await loadCachedCheckpointLayersModel(ckpt);
+    hardwareSummary = `TF.js (${backend.toUpperCase()}) · ${fineTuningStrategy} · SHA ${ckpt.sha256.slice(0, 8)}`;
+  }
+
   const isAnnotated = (item: DatasetItem) =>
     availableBlobIds.has(item.id) &&
     (params.taskType === 'image_classification'
@@ -1762,6 +2028,7 @@ export async function runBrowserTrainingPipeline(params: {
   const testItemsRaw = params.items.filter((it) => it.split === 'test' && isAnnotated(it));
 
   if (trainItems.length < 2) {
+    disposeCompositeAndBaseModel(undefined, pretrainedBaseModel);
     throw new Error('At least 2 annotated images with local blobs in Train split are required.');
   }
 
@@ -1773,7 +2040,7 @@ export async function runBrowserTrainingPipeline(params: {
   const testItems = testItemsRaw.length > 0 ? testItemsRaw : valItems;
 
   params.hooks.onLog(
-    `Loaded splits — Train: ${trainItems.length} (letterboxed + aug), Val: ${valItems.length} (clean letterbox), Test: ${testItems.length} (clean letterbox)`
+    `Loaded splits — Train: ${trainItems.length} (letterboxed + aug), Val: ${valItems.length} (clean), Test: ${testItems.length} (clean)`
   );
 
   const loadSplitTensors = async (splitItems: DatasetItem[], applyTrainAug: boolean) => {
@@ -1800,8 +2067,9 @@ export async function runBrowserTrainingPipeline(params: {
           : null;
       const tensor = await blobToNormalizedTensor(
         blob,
-        params.hyperparameters.inputSize,
-        augForTask
+        effectiveInputSize,
+        augForTask,
+        preprocessMode
       );
       tensors.push(tensor);
       validItems.push(item);
@@ -1828,11 +2096,26 @@ export async function runBrowserTrainingPipeline(params: {
 
   try {
     if (params.taskType === 'image_classification') {
-      model = buildClassificationModel(
-        params.architecture,
-        params.hyperparameters.inputSize,
-        classes.length
-      );
+      if (pretrainedBaseModel) {
+        const built = buildPretrainedTransferClassifier({
+          baseModel: pretrainedBaseModel,
+          numClasses: classes.length,
+          strategy: fineTuningStrategy,
+          multiLabel,
+          weightDecay,
+        });
+        model = built.model;
+        params.hooks.onLog(
+          `[Transfer] Strategy=${fineTuningStrategy} · Unfrozen backbone layers=${built.unfrozenBackboneLayerCount}/${built.backboneLayerCount} · Trainable=${built.trainableParamCount.toLocaleString()} (BN layers kept frozen)`
+        );
+      } else {
+        model = buildClassificationModel(
+          params.architecture,
+          effectiveInputSize,
+          classes.length,
+          { multiLabel, weightDecay }
+        );
+      }
 
       const yTrainIdx = trainLoaded.validItems.map((it) => classes.indexOf(it.classificationLabel));
       const yValIdx = valLoaded.validItems.map((it) => classes.indexOf(it.classificationLabel));
@@ -1854,7 +2137,8 @@ export async function runBrowserTrainingPipeline(params: {
           yValOneHot: yValOH,
           yValIndices: yValIdx,
           classes,
-          hyperparameters: params.hyperparameters,
+          hyperparameters: { ...params.hyperparameters, inputSize: effectiveInputSize },
+          options: { fineTuningStrategy, scheduler, weightDecay, multiLabel, preprocessMode },
           hooks: {
             ...params.hooks,
             onSaveCheckpoint: async (m, ep) => {
@@ -1863,9 +2147,13 @@ export async function runBrowserTrainingPipeline(params: {
                 projectId: params.projectId,
                 runId: params.runId,
                 classes,
-                inputSize: params.hyperparameters.inputSize,
+                inputSize: effectiveInputSize,
                 taskType: params.taskType,
                 architecture: params.architecture,
+                preprocessMode,
+                fineTuningStrategy,
+                multiLabel,
+                checkpointSha256,
                 model: m,
               });
               params.hooks.onLog(`Checkpoint saved at epoch ${ep}.`);
@@ -1913,9 +2201,13 @@ export async function runBrowserTrainingPipeline(params: {
           projectId: params.projectId,
           runId: params.runId,
           classes,
-          inputSize: params.hyperparameters.inputSize,
+          inputSize: effectiveInputSize,
           taskType: params.taskType,
           architecture: params.architecture,
+          preprocessMode,
+          fineTuningStrategy,
+          multiLabel,
+          checkpointSha256,
           model,
         });
 
@@ -1939,7 +2231,7 @@ export async function runBrowserTrainingPipeline(params: {
           confusionLabels: evalMetrics.confusionLabels,
           confusionFlat: evalMetrics.confusionFlat,
           perClassMetrics: evalMetrics.perClassMetrics,
-          hardwareSummary,
+          hardwareSummary: hardwareSummary.slice(0, 180),
           diagnostics: trainResult.diagnostics,
         };
       } finally {
@@ -1947,7 +2239,7 @@ export async function runBrowserTrainingPipeline(params: {
         yValOH.dispose();
       }
     } else {
-      model = buildGridYoloModel(params.hyperparameters.inputSize, classes.length, DETECTION_GRID_SIZE);
+      model = buildGridYoloModel(effectiveInputSize, classes.length, DETECTION_GRID_SIZE);
       const yTrainTargets = encodeGridTargets(
         trainLoaded.validItems.map((it) => it.annotations),
         classes,
@@ -2089,7 +2381,7 @@ export async function runBrowserTrainingPipeline(params: {
     trainLoaded.stacked.dispose();
     valLoaded.stacked.dispose();
     testLoaded.stacked.dispose();
-    model?.dispose();
+    disposeCompositeAndBaseModel(model, pretrainedBaseModel);
   }
 }
 
@@ -2101,8 +2393,14 @@ export async function predictImageWithLocalModel(params: {
   imageBlob: Blob;
   confidenceThreshold: number;
   iouThreshold: number;
+  preprocessMode?: PreprocessMode;
 }): Promise<InferencePrediction> {
-  const tensor3d = await blobToNormalizedTensor(params.imageBlob, params.inputSize, null);
+  const tensor3d = await blobToNormalizedTensor(
+    params.imageBlob,
+    params.inputSize,
+    null,
+    params.preprocessMode ?? 'zero_one'
+  );
   const t0 = performance.now();
   try {
     if (params.taskType === 'image_classification') {
@@ -2158,6 +2456,92 @@ export async function predictImageWithLocalModel(params: {
   }
 }
 
+export async function runCocoPretrainedInference(params: {
+  graphModel: tf.GraphModel;
+  imageBlob: Blob;
+  confidenceThreshold?: number;
+  iouThreshold?: number;
+}): Promise<InferencePrediction> {
+  const confThresh = params.confidenceThreshold ?? 0.35;
+  const iouThresh = params.iouThreshold ?? 0.45;
+  const url = URL.createObjectURL(params.imageBlob);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Failed to decode test image'));
+      el.src = url;
+    });
+
+    const t0 = performance.now();
+    const input = tf.tidy(() =>
+      tf.image
+        .resizeBilinear(tf.browser.fromPixels(img), [300, 300])
+        .toInt()
+        .expandDims(0)
+    ) as tf.Tensor4D;
+
+    const rawOutputs = await params.graphModel.executeAsync(input);
+    input.dispose();
+    const outputs = Array.isArray(rawOutputs) ? rawOutputs : [rawOutputs];
+
+    try {
+      // outputs[0]: [1, 1917, 90] scores, outputs[1]: [1, 1917, 1, 4] [ymin, xmin, ymax, xmax]
+      const scoresTensor = outputs[0].squeeze([0]) as tf.Tensor2D;
+      const boxesTensor = outputs[1].squeeze([0, 2]) as tf.Tensor2D;
+
+      const maxScores = scoresTensor.max(1) as tf.Tensor1D;
+      const argClasses = scoresTensor.argMax(1) as tf.Tensor1D;
+      const keepIdxTensor = await tf.image.nonMaxSuppressionAsync(
+        boxesTensor,
+        maxScores,
+        20,
+        iouThresh,
+        confThresh
+      );
+
+      const keepIdx = Array.from(await keepIdxTensor.data());
+      const boxesData = await boxesTensor.data();
+      const scoresData = await maxScores.data();
+      const classData = await argClasses.data();
+
+      scoresTensor.dispose();
+      boxesTensor.dispose();
+      maxScores.dispose();
+      argClasses.dispose();
+      keepIdxTensor.dispose();
+
+      const latencyMs = Number((performance.now() - t0).toFixed(2));
+      const detections = keepIdx.map((idx) => {
+        const ymin = Math.max(0, Math.min(1, boxesData[idx * 4]));
+        const xmin = Math.max(0, Math.min(1, boxesData[idx * 4 + 1]));
+        const ymax = Math.max(0, Math.min(1, boxesData[idx * 4 + 2]));
+        const xmax = Math.max(0, Math.min(1, boxesData[idx * 4 + 3]));
+        const clsSlot = classData[idx];
+        return {
+          className: COCO_90_LABELS[clsSlot] ?? `coco_${clsSlot + 1}`,
+          confidence: Number(scoresData[idx].toFixed(4)),
+          x: Number(xmin.toFixed(4)),
+          y: Number(ymin.toFixed(4)),
+          width: Number(Math.max(0.01, xmax - xmin).toFixed(4)),
+          height: Number(Math.max(0.01, ymax - ymin).toFixed(4)),
+        };
+      });
+
+      return {
+        taskType: 'object_detection',
+        latencyMs,
+        classifications: [],
+        detections,
+      };
+    } finally {
+      outputs.forEach((t) => t.dispose());
+    }
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 export function computeLatencyPercentiles(latenciesMs: number[]): {
   avgLatencyMs: number;
   p95LatencyMs: number;
@@ -2184,6 +2568,7 @@ export async function evaluateLocalModelOnItems(params: {
   split: EvaluationSplitTarget;
   confidenceThreshold: number;
   iouThreshold: number;
+  preprocessMode?: PreprocessMode;
   onProgress?: (done: number, total: number) => void;
 }): Promise<BatchEvaluationResult> {
   const candidates = params.items.filter((it) => {
@@ -2225,6 +2610,7 @@ export async function evaluateLocalModelOnItems(params: {
       imageBlob: blob,
       confidenceThreshold: params.confidenceThreshold,
       iouThreshold: params.iouThreshold,
+      preprocessMode: params.preprocessMode,
     });
 
     latencies.push(pred.latencyMs);

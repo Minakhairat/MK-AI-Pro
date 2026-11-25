@@ -169,6 +169,77 @@ apiRouter.post('/ai-engine/ping', requireAuth, async (_req: AuthenticatedRequest
   }
 });
 
+apiRouter.get('/ai-engine/capabilities', requireAuth, async (_req: AuthenticatedRequest, res) => {
+  const emptyCaps = {
+    reachable: false,
+    torchInstalled: false,
+    torchvisionInstalled: false,
+    ultralyticsInstalled: false,
+    timmInstalled: false,
+    transformersInstalled: false,
+    onnxInstalled: false,
+    onnxruntimeInstalled: false,
+    paddleocrInstalled: false,
+    cudaAvailable: false,
+    mpsAvailable: false,
+    cpuCount: 0,
+    supportedArchitectures: [] as string[],
+  };
+  const engineUrl = getValidatedAiEngineUrl();
+  if (!engineUrl) {
+    res.json(emptyCaps);
+    return;
+  }
+
+  try {
+    const target = new URL('/capabilities', engineUrl).toString();
+    const response = await fetch(target, {
+      method: 'GET',
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!response.ok) {
+      res.json(emptyCaps);
+      return;
+    }
+    const payload = (await response.json()) as {
+      hardware?: {
+        torch_installed?: boolean;
+        torchvision_installed?: boolean;
+        ultralytics_installed?: boolean;
+        timm_installed?: boolean;
+        transformers_installed?: boolean;
+        onnx_installed?: boolean;
+        onnxruntime_installed?: boolean;
+        paddleocr_installed?: boolean;
+        cuda_available?: boolean;
+        mps_available?: boolean;
+        cpu_count?: number;
+      };
+      supported_architectures?: string[];
+    };
+    const hw = payload.hardware || {};
+    res.json({
+      reachable: true,
+      torchInstalled: Boolean(hw.torch_installed),
+      torchvisionInstalled: Boolean(hw.torchvision_installed),
+      ultralyticsInstalled: Boolean(hw.ultralytics_installed),
+      timmInstalled: Boolean(hw.timm_installed),
+      transformersInstalled: Boolean(hw.transformers_installed),
+      onnxInstalled: Boolean(hw.onnx_installed),
+      onnxruntimeInstalled: Boolean(hw.onnxruntime_installed),
+      paddleocrInstalled: Boolean(hw.paddleocr_installed),
+      cudaAvailable: Boolean(hw.cuda_available),
+      mpsAvailable: Boolean(hw.mps_available),
+      cpuCount: Number(hw.cpu_count || 0),
+      supportedArchitectures: Array.isArray(payload.supported_architectures)
+        ? payload.supported_architectures
+        : [],
+    });
+  } catch {
+    res.json(emptyCaps);
+  }
+});
+
 const SAFE_JOB_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
 
 apiRouter.post('/training/jobs', requireAuth, async (req: AuthenticatedRequest, res) => {

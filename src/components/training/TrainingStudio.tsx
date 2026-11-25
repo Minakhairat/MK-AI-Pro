@@ -1,12 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   CheckCircle2,
   Cpu,
   Download,
   Pause,
   Play,
   RefreshCw,
+  ShieldCheck,
+  Sparkles,
   Square,
   Trash2,
   Upload,
@@ -14,6 +17,7 @@ import {
 import { useI18n } from '../../contexts/I18nContext';
 import {
   controlPythonTrainingJob,
+  fetchAiEngineCapabilities,
   fetchPythonTrainingJob,
   pingAiEngine,
   startPythonTrainingJob,
@@ -23,8 +27,18 @@ import {
   loadTfModelFromIndexedDb,
 } from '../../lib/localModelStore';
 import {
+  checkWorkerCompatibility,
+  getCatalogModelsForTask,
+  getModelCatalogEntry,
+  getPreprocessModeForArchitecture,
+} from '../../lib/modelRegistry';
+import { recommendModelsForProject } from '../../lib/modelRecommender';
+import {
+  downloadAndCachePretrainedCheckpoint,
+  getCachedCheckpoint,
+} from '../../lib/pretrainedWeightManager';
+import {
   getRecommendedHyperparameters,
-  MODEL_ARCHITECTURES,
   predictImageWithLocalModel,
   runBrowserTrainingPipeline,
   runDatasetOverfittingSanityTest,
@@ -45,12 +59,18 @@ import {
 } from '../../services/firestoreService';
 import type {
   AiEnginePingResponse,
+  CachedCheckpointRecord,
   Dataset,
   DatasetItem,
   EpochMetricPoint,
+  FineTuningStrategy,
   InferencePrediction,
+  OptimizationPriority,
   Project,
+  PythonWorkerCapabilities,
   SanityTestResult,
+  SchedulerType,
+  TargetDeviceType,
   TrainedModel,
   TrainingDiagnostics,
   TrainingHyperparameters,
@@ -65,6 +85,7 @@ interface TrainingStudioProps {
   items: DatasetItem[];
   trainingRuns: TrainingRun[];
   trainedModels: TrainedModel[];
+  initialArchId?: string | null;
   onSelectDataset: (datasetId: string) => void;
 }
 
@@ -210,22 +231,51 @@ export function TrainingStudio({
   items,
   trainingRuns,
   trainedModels,
+  initialArchId,
   onSelectDataset,
 }: TrainingStudioProps) {
   const { t, locale } = useI18n();
 
   const taskArchitectures = useMemo(
-    () => MODEL_ARCHITECTURES.filter((a) => a.taskType === project.taskType),
+    () => getCatalogModelsForTask(project.taskType, { trainableOnly: true }),
     [project.taskType]
   );
 
   const [selectedArchId, setSelectedArchId] = useState<string>(
-    taskArchitectures[0]?.id || 'mk_mobilenet_sep'
+    initialArchId && taskArchitectures.some((a) => a.id === initialArchId)
+      ? initialArchId
+      : taskArchitectures[0]?.id || 'mobilenet_v1_025_imagenet'
   );
   const [mode, setMode] = useState<TrainingMode>(project.trainingMode);
   const [hp, setHp] = useState<TrainingHyperparameters>(() =>
     getRecommendedHyperparameters(project.taskType, items.length)
   );
+
+  // Extended Transfer Learning & Expert options
+  const [fineTuningStrategy, setFineTuningStrategy] =
+    useState<FineTuningStrategy>('frozen_head');
+  const [scheduler, setScheduler] = useState<SchedulerType>('cosine');
+  const [weightDecay, setWeightDecay] = useState<number>(0.0001);
+  const [multiLabel, setMultiLabel] = useState<boolean>(false);
+  const [exportOnnx, setExportOnnx] = useState<boolean>(true);
+
+  // Recommender preferences
+  const [targetDevice, setTargetDevice] = useState<TargetDeviceType>('browser');
+  const [optPriority, setOptPriority] = useState<OptimizationPriority>('balanced');
+
+  // Pretrained Checkpoint Cache status
+  const [cachedCheckpoint, setCachedCheckpoint] = useState<CachedCheckpointRecord | null>(null);
+  const [downloadingCkpt, setDownloadingCkpt] = useState(false);
+  const [ckptStatusMsg, setCkptStatusMsg] = useState<string | null>(null);
+
+  // Cloud/External Worker preflight cost gate
+  const [showCostGate, setShowCostGate] = useState(false);
+
+  useEffect(() => {
+    if (initialArchId && taskArchitectures.some((a) => a.id === initialArchId)) {
+      setSelectedArchId(initialArchId);
+    }
+  }, [initialArchId, taskArchitectures]);
 
   useEffect(() => {
     const first = taskArchitectures[0];
@@ -239,7 +289,22 @@ export function TrainingStudio({
   }, [project.trainingMode]);
 
   const selectedArch =
-    taskArchitectures.find((a) => a.id === selectedArchId) || taskArchitectures[0];
+    taskArchitectures.find((a) => a.id === selectedArchId) ||
+    getModelCatalogEntry(selectedArchId) ||
+    taskArchitectures[0];
+
+  useEffect(() => {
+    if (!selectedArch) return;
+    if (!selectedArch.capabilities.multiLabel) {
+      setMultiLabel(false);
+    }
+    if (!selectedArch.supportedStrategies.includes(fineTuningStrategy)) {
+      setFineTuningStrategy(selectedArch.supportedStrategies[0] ?? 'full_finetune');
+    }
+    if (selectedArch.pretrainedAvailable) {
+      setHp((prev) => ({ ...prev, inputSize: selectedArch.recommendedInputSize }));
+    }
+  }, [selectedArch?.id]);
 
   useEffect(() => {
     if (mode === 'beginner') {
@@ -248,18 +313,71 @@ export function TrainingStudio({
         rec.inputSize = selectedArch.recommendedInputSize;
       }
       setHp(rec);
+      if (selectedArch?.pretrainedAvailable) {
+        setFineTuningStrategy(items.length < 250 ? 'frozen_head' : 'partial_finetune');
+        setScheduler('cosine');
+        setWeightDecay(0.0001);
+      } else {
+        setFineTuningStrategy('full_finetune');
+        setScheduler('none');
+      }
     }
   }, [mode, project.taskType, items.length, selectedArch?.id]);
 
-  // Python worker live probe
+  // Pretrained Checkpoint status lookup
+  useEffect(() => {
+    setCkptStatusMsg(null);
+    if (!selectedArch?.checkpointUrl) {
+      setCachedCheckpoint(null);
+      return;
+    }
+    let active = true;
+    getCachedCheckpoint(selectedArch.id)
+      .then((rec) => {
+        if (active) setCachedCheckpoint(rec);
+      })
+      .catch(() => {
+        if (active) setCachedCheckpoint(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedArch?.id]);
+
+  const handleDownloadCheckpoint = async () => {
+    if (!selectedArch?.checkpointUrl) return;
+    setDownloadingCkpt(true);
+    setCkptStatusMsg(null);
+    setTrainError(null);
+    try {
+      const rec = await downloadAndCachePretrainedCheckpoint({
+        catalogModelId: selectedArch.id,
+        checkpointUrl: selectedArch.checkpointUrl,
+        isGraphModel: Boolean(selectedArch.isGraphModel),
+        onProgress: (msg) => setCkptStatusMsg(msg),
+      });
+      setCachedCheckpoint(rec);
+    } catch (err) {
+      setTrainError(err instanceof Error ? err.message : 'Pretrained checkpoint download failed.');
+    } finally {
+      setDownloadingCkpt(false);
+    }
+  };
+
+  // Python worker live probe + capabilities
   const [probingEngine, setProbingEngine] = useState(false);
   const [engineStatus, setEngineStatus] = useState<AiEnginePingResponse | null>(null);
+  const [workerCaps, setWorkerCaps] = useState<PythonWorkerCapabilities | null>(null);
 
   const handleProbeEngine = async () => {
     setProbingEngine(true);
     try {
-      const res = await pingAiEngine();
-      setEngineStatus(res);
+      const [pingRes, capsRes] = await Promise.all([
+        pingAiEngine(),
+        fetchAiEngineCapabilities(),
+      ]);
+      setEngineStatus(pingRes);
+      setWorkerCaps(capsRes);
     } catch (err) {
       setEngineStatus({
         reachable: false,
@@ -271,6 +389,17 @@ export function TrainingStudio({
       setProbingEngine(false);
     }
   };
+
+  useEffect(() => {
+    void fetchAiEngineCapabilities()
+      .then((caps) => setWorkerCaps(caps))
+      .catch(() => {});
+  }, []);
+
+  const workerCompatibility = useMemo(() => {
+    if (!selectedArch) return { compatible: true, missingPackages: [], reason: '' };
+    return checkWorkerCompatibility(selectedArch, workerCaps);
+  }, [selectedArch, workerCaps]);
 
   // Dataset Readiness & Blob Verification
   const [availableBlobIds, setAvailableBlobIds] = useState<Set<string> | undefined>(undefined);
@@ -356,18 +485,32 @@ export function TrainingStudio({
     setLogs((prev) => [...prev.slice(-120), `[${stamp}] ${line}`]);
   };
 
+  const recommendations = useMemo(() => {
+    return recommendModelsForProject({
+      taskType: project.taskType,
+      sampleCount: items.length,
+      classCount: activeDataset?.classes.length ?? 0,
+      targetDevice,
+      priority: optPriority,
+      workerCapabilities: workerCaps,
+    }).slice(0, 3);
+  }, [project.taskType, items.length, activeDataset?.classes.length, targetDevice, optPriority, workerCaps]);
+
   const handleRunSanityCheck = async () => {
     if (!activeDataset || !selectedArch) return;
     setSanityBusy(true);
     setSanityErr(null);
     setSanityResult(null);
     try {
+      const effectiveSize = selectedArch.pretrainedAvailable
+        ? selectedArch.recommendedInputSize
+        : hp.inputSize;
       const res = await runDatasetOverfittingSanityTest({
         taskType: project.taskType,
         architecture: selectedArch.id,
         dataset: activeDataset,
         items,
-        inputSize: hp.inputSize,
+        inputSize: effectiveSize,
       });
       setSanityResult(res);
     } catch (err) {
@@ -377,8 +520,23 @@ export function TrainingStudio({
     }
   };
 
-  const handleStartTraining = async () => {
+  const handleStartTraining = async (costApproved = false) => {
     if (!activeDataset || !readiness.ready || !selectedArch) return;
+    if (!selectedArch.capabilities.training) {
+      setTrainError(t.trainingStudio.inferenceOnlyBlockedBadge);
+      return;
+    }
+    if (selectedArch.backendEngine === 'python_fastapi') {
+      if (!workerCompatibility.compatible) {
+        setTrainError(workerCompatibility.reason);
+        return;
+      }
+      if (!costApproved) {
+        setShowCostGate(true);
+        return;
+      }
+    }
+    setShowCostGate(false);
 
     setTrainError(null);
     setLiveEpochs([]);
@@ -421,6 +579,11 @@ export function TrainingStudio({
           architecture: selectedArch.id,
           classes: activeDataset.classes,
           hyperparameters: hp,
+          fineTuningStrategy,
+          scheduler,
+          weightDecay,
+          multiLabel,
+          exportOnnx,
         });
         setPythonJobId(pyJob.job_id);
         appendLog(`Python worker accepted job ${pyJob.job_id}`);
@@ -486,6 +649,13 @@ export function TrainingStudio({
         dataset: activeDataset,
         items,
         hyperparameters: hp,
+        options: {
+          fineTuningStrategy,
+          scheduler,
+          weightDecay,
+          multiLabel: selectedArch.capabilities.multiLabel ? multiLabel : false,
+          preprocessMode: selectedArch.preprocessMode,
+        },
         hooks: {
           shouldPause: () => pauseRef.current,
           shouldCancel: () => cancelRef.current,
@@ -563,7 +733,7 @@ export function TrainingStudio({
           architecture: selectedArch.id,
           license: selectedArch.license,
           classes: activeDataset.classes,
-          inputSize: hp.inputSize,
+          inputSize: selectedArch.pretrainedAvailable ? selectedArch.recommendedInputSize : hp.inputSize,
           parameterCount: result.parameterCount,
           weightSizeBytes: result.weightSizeBytes,
           inferenceLatencyMs: result.inferenceLatencyMs,
@@ -575,7 +745,7 @@ export function TrainingStudio({
           confusionLabels: result.confusionLabels,
           confusionFlat: result.confusionFlat,
           perClassMetrics: result.perClassMetrics,
-          onDeviceCompatible: selectedArch.onDeviceCompatible,
+          onDeviceCompatible: selectedArch.browserCompatible,
           newModelCount: trainedModels.length + 1,
         });
 
@@ -679,6 +849,9 @@ export function TrainingStudio({
           imageBlob: file,
           confidenceThreshold: 0.25,
           iouThreshold: 0.5,
+          preprocessMode:
+            loaded.record.preprocessMode ??
+            getPreprocessModeForArchitecture(inspectedModel.architecture),
         });
         setTestPrediction(pred);
       } finally {
@@ -743,7 +916,7 @@ export function TrainingStudio({
           </div>
 
           <div className="flex items-center gap-1 p-1 rounded-lg bg-zinc-100 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 shrink-0">
-            {(['beginner', 'advanced'] as const).map((m) => (
+            {(['beginner', 'advanced', 'expert'] as const).map((m) => (
               <button
                 key={m}
                 type="button"
@@ -755,7 +928,11 @@ export function TrainingStudio({
                     : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100'
                 }`}
               >
-                {m === 'beginner' ? t.projectModal.beginnerMode : t.projectModal.advancedMode}
+                {m === 'beginner'
+                  ? t.projectModal.beginnerMode
+                  : m === 'advanced'
+                  ? t.projectModal.advancedMode
+                  : t.projectModal.expertMode}
               </button>
             ))}
           </div>
@@ -796,6 +973,101 @@ export function TrainingStudio({
               ))}
             </ul>
           )}
+        </div>
+
+        {/* Intelligent Model Recommender */}
+        <div className="border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 bg-zinc-50 dark:bg-zinc-950 space-y-3">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                <Sparkles className="w-3.5 h-3.5 text-red-600" />
+                <span>{t.trainingStudio.recommenderTitle}</span>
+              </div>
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+                {t.trainingStudio.recommenderDesc}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <select
+                disabled={isTraining}
+                value={targetDevice}
+                onChange={(e) => setTargetDevice(e.target.value as TargetDeviceType)}
+                aria-label={t.trainingStudio.targetDeviceLabel}
+                className="px-2.5 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+              >
+                <option value="browser">Browser (TF.js)</option>
+                <option value="mobile_pwa">Mobile PWA</option>
+                <option value="desktop_gpu">Desktop / Server GPU</option>
+              </select>
+              <select
+                disabled={isTraining}
+                value={optPriority}
+                onChange={(e) => setOptPriority(e.target.value as OptimizationPriority)}
+                aria-label={t.trainingStudio.priorityLabel}
+                className="px-2.5 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
+              >
+                <option value="balanced">Balanced</option>
+                <option value="accuracy">Max Accuracy</option>
+                <option value="speed">Fastest Inference</option>
+                <option value="small_size">Smallest Model Size</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {recommendations.map((rec) => {
+              const active = selectedArchId === rec.spec.id;
+              return (
+                <div
+                  key={rec.spec.id}
+                  className={`p-3 rounded-lg border text-xs space-y-2 ${
+                    active
+                      ? 'border-red-600 bg-white dark:bg-zinc-900'
+                      : 'border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                      #{rec.rank} {rec.spec.name}
+                    </span>
+                    <span className="font-mono text-[10px] text-zinc-500 shrink-0">
+                      {rec.spec.modelSizeMb}MB
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-600 dark:text-zinc-400 leading-snug">
+                    {(locale === 'ar' ? rec.reasonsAr : rec.reasonsEn)[0] ||
+                      rec.blockerReason ||
+                      ''}
+                  </p>
+                  {!rec.compatible && rec.blockerReason && (
+                    <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                      {rec.blockerReason}
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    disabled={isTraining || !rec.compatible}
+                    onClick={() => {
+                      setSelectedArchId(rec.spec.id);
+                      setFineTuningStrategy(rec.recommendedConfig.fineTuningStrategy);
+                      setScheduler(rec.recommendedConfig.scheduler);
+                      setWeightDecay(rec.recommendedConfig.weightDecay);
+                      setHp((prev) => ({
+                        ...prev,
+                        epochs: rec.recommendedConfig.epochs,
+                        batchSize: rec.recommendedConfig.batchSize,
+                        learningRate: rec.recommendedConfig.learningRate,
+                        inputSize: rec.recommendedConfig.inputSize,
+                      }));
+                    }}
+                    className="w-full py-1.5 text-[11px] font-semibold rounded border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-45"
+                  >
+                    {t.trainingStudio.applyRecBtn}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {/* Dataset & Architecture Selectors */}
@@ -841,21 +1113,24 @@ export function TrainingStudio({
             >
               {taskArchitectures.map((arch) => (
                 <option key={arch.id} value={arch.id}>
-                  {arch.name} — {arch.license}
+                  {arch.name} ({arch.backendEngine === 'tfjs_browser' ? 'Browser' : 'Python'}) —{' '}
+                  {arch.license}
                 </option>
               ))}
             </select>
           </div>
         </div>
 
-        {/* Selected Architecture Details & Runtime Status */}
+        {/* Selected Architecture Details, Pretrained Checkpoint Cache & Runtime Status */}
         {selectedArch && (
           <div className="border border-zinc-200 dark:border-zinc-800 rounded-lg p-4 bg-zinc-50 dark:bg-zinc-950 space-y-2.5 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="font-semibold text-zinc-900 dark:text-zinc-100">
                 {selectedArch.backendEngine === 'tfjs_browser'
                   ? t.trainingStudio.browserEngineBadge
-                  : t.trainingStudio.pythonEngineBadge}
+                  : t.trainingStudio.pythonEngineBadge}{' '}
+                · {selectedArch.parameterCountLabel} · {selectedArch.modelSizeMb} MB ·{' '}
+                {selectedArch.preprocessMode}
               </span>
               {selectedArch.backendEngine === 'python_fastapi' && (
                 <button
@@ -872,22 +1147,66 @@ export function TrainingStudio({
             <p className="text-zinc-600 dark:text-zinc-400 leading-relaxed">
               {locale === 'ar' ? selectedArch.summaryAr : selectedArch.summaryEn}
             </p>
-            {selectedArch.backendEngine === 'python_fastapi' &&
-              (!engineStatus || !engineStatus.reachable) && (
-                <p className="text-amber-700 dark:text-amber-400">
-                  {t.trainingStudio.pythonOfflineHint}
-                </p>
-              )}
+            {selectedArch.checkpointUrl && selectedArch.backendEngine === 'tfjs_browser' && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-zinc-200 dark:border-zinc-800">
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck
+                    className={`w-3.5 h-3.5 ${
+                      cachedCheckpoint ? 'text-emerald-600' : 'text-zinc-400'
+                    }`}
+                  />
+                  <span
+                    className={
+                      cachedCheckpoint
+                        ? 'text-emerald-700 dark:text-emerald-400 font-medium'
+                        : 'text-zinc-600 dark:text-zinc-400'
+                    }
+                  >
+                    {cachedCheckpoint
+                      ? `${t.trainingStudio.checkpointCachedBadge} (SHA ${cachedCheckpoint.sha256.slice(
+                          0,
+                          12
+                        )})`
+                      : t.trainingStudio.checkpointNeedsDownloadBadge}
+                  </span>
+                </div>
+                {!cachedCheckpoint && (
+                  <button
+                    type="button"
+                    disabled={downloadingCkpt || isTraining}
+                    onClick={() => void handleDownloadCheckpoint()}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-zinc-300 dark:border-zinc-700 hover:bg-white dark:hover:bg-zinc-900 font-medium"
+                  >
+                    <Download className="w-3 h-3" />
+                    <span>
+                      {downloadingCkpt ? '...' : t.trainingStudio.downloadCheckpointBtn}
+                    </span>
+                  </button>
+                )}
+              </div>
+            )}
+            {ckptStatusMsg && (
+              <p className="text-[11px] font-mono text-zinc-500">{ckptStatusMsg}</p>
+            )}
+            {selectedArch.backendEngine === 'python_fastapi' && !workerCompatibility.compatible && (
+              <p className="text-amber-700 dark:text-amber-400">
+                {workerCompatibility.reason || t.trainingStudio.pythonOfflineHint}
+              </p>
+            )}
           </div>
         )}
 
-        {/* Beginner vs Advanced Hyperparameters */}
+        {/* Dynamic Parameter Exposure: Beginner / Advanced / Expert */}
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          {mode === 'beginner' ? t.trainingStudio.modeBeginnerDesc : t.trainingStudio.modeAdvancedDesc}
+          {mode === 'beginner'
+            ? t.trainingStudio.modeBeginnerDesc
+            : mode === 'advanced'
+            ? t.trainingStudio.modeAdvancedDesc
+            : t.trainingStudio.modeExpertDesc}
         </p>
 
         {mode === 'beginner' ? (
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs border border-zinc-200 dark:border-zinc-800 rounded-lg p-3.5 tabular-nums">
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 text-xs border border-zinc-200 dark:border-zinc-800 rounded-lg p-3.5 tabular-nums">
             <div>
               <span className="text-zinc-500 block">{t.trainingStudio.epochsLabel}</span>
               <span className="font-mono font-semibold">{hp.epochs}</span>
@@ -907,6 +1226,10 @@ export function TrainingStudio({
             <div>
               <span className="text-zinc-500 block">{t.trainingStudio.inputSizeLabel}</span>
               <span className="font-mono font-semibold">{hp.inputSize}px</span>
+            </div>
+            <div>
+              <span className="text-zinc-500 block">{t.trainingStudio.strategyLabel}</span>
+              <span className="font-mono font-semibold">{fineTuningStrategy}</span>
             </div>
           </div>
         ) : (
@@ -949,7 +1272,7 @@ export function TrainingStudio({
               <input
                 type="number"
                 step={0.0001}
-                min={0.00005}
+                min={0.00001}
                 max={0.1}
                 disabled={isTraining}
                 value={hp.learningRate}
@@ -979,48 +1302,91 @@ export function TrainingStudio({
                 {t.trainingStudio.inputSizeLabel}
               </label>
               <select
-                disabled={isTraining}
-                value={hp.inputSize}
+                disabled={
+                  isTraining ||
+                  Boolean(
+                    selectedArch?.pretrainedAvailable &&
+                      selectedArch.backendEngine === 'tfjs_browser'
+                  )
+                }
+                value={
+                  selectedArch?.pretrainedAvailable &&
+                  selectedArch.backendEngine === 'tfjs_browser'
+                    ? selectedArch.recommendedInputSize
+                    : hp.inputSize
+                }
                 onChange={(e) => setHp({ ...hp, inputSize: Number(e.target.value) })}
-                className="w-full px-3 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 font-mono tabular-nums"
+                className="w-full px-3 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 font-mono tabular-nums disabled:opacity-65"
               >
-                {[64, 96, 128, 160, 224].map((sz) => (
+                {[64, 96, 128, 160, 224, 300, 384, 640].map((sz) => (
                   <option key={sz} value={sz}>
                     {sz}×{sz}
                   </option>
                 ))}
               </select>
             </div>
-            <div>
-              <label className="block text-zinc-600 dark:text-zinc-400 mb-1">
-                {t.trainingStudio.confThresholdLabel}
-              </label>
-              <input
-                type="number"
-                step={0.05}
-                min={0.05}
-                max={0.95}
-                disabled={isTraining}
-                value={hp.confidenceThreshold}
-                onChange={(e) => setHp({ ...hp, confidenceThreshold: Number(e.target.value) || 0.35 })}
-                className="w-full px-3 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 font-mono tabular-nums"
-              />
-            </div>
-            <div>
-              <label className="block text-zinc-600 dark:text-zinc-400 mb-1">
-                {t.trainingStudio.iouThresholdLabel}
-              </label>
-              <input
-                type="number"
-                step={0.05}
-                min={0.1}
-                max={0.95}
-                disabled={isTraining}
-                value={hp.iouThreshold}
-                onChange={(e) => setHp({ ...hp, iouThreshold: Number(e.target.value) || 0.5 })}
-                className="w-full px-3 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 font-mono tabular-nums"
-              />
-            </div>
+
+            {selectedArch?.pretrainedAvailable && (
+              <div className="col-span-2 sm:col-span-3">
+                <label className="block text-zinc-600 dark:text-zinc-400 mb-1">
+                  {t.trainingStudio.strategyLabel}
+                </label>
+                <select
+                  disabled={isTraining}
+                  value={fineTuningStrategy}
+                  onChange={(e) => setFineTuningStrategy(e.target.value as FineTuningStrategy)}
+                  className="w-full px-3 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950"
+                >
+                  {selectedArch.supportedStrategies.map((st) => (
+                    <option key={st} value={st}>
+                      {st === 'frozen_head'
+                        ? t.trainingStudio.strategyFrozen
+                        : st === 'partial_finetune'
+                        ? t.trainingStudio.strategyPartial
+                        : t.trainingStudio.strategyFull}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {project.taskType === 'object_detection' && (
+              <>
+                <div>
+                  <label className="block text-zinc-600 dark:text-zinc-400 mb-1">
+                    {t.trainingStudio.confThresholdLabel}
+                  </label>
+                  <input
+                    type="number"
+                    step={0.05}
+                    min={0.05}
+                    max={0.95}
+                    disabled={isTraining}
+                    value={hp.confidenceThreshold}
+                    onChange={(e) =>
+                      setHp({ ...hp, confidenceThreshold: Number(e.target.value) || 0.35 })
+                    }
+                    className="w-full px-3 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 font-mono tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-zinc-600 dark:text-zinc-400 mb-1">
+                    {t.trainingStudio.iouThresholdLabel}
+                  </label>
+                  <input
+                    type="number"
+                    step={0.05}
+                    min={0.1}
+                    max={0.95}
+                    disabled={isTraining}
+                    value={hp.iouThreshold}
+                    onChange={(e) => setHp({ ...hp, iouThreshold: Number(e.target.value) || 0.5 })}
+                    className="w-full px-3 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 font-mono tabular-nums"
+                  />
+                </div>
+              </>
+            )}
+
             <div>
               <label className="block text-zinc-600 dark:text-zinc-400 mb-1">
                 {t.trainingStudio.patienceLabel}
@@ -1037,6 +1403,43 @@ export function TrainingStudio({
                 className="w-full px-3 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 font-mono tabular-nums"
               />
             </div>
+
+            {mode === 'expert' && (
+              <>
+                <div>
+                  <label className="block text-zinc-600 dark:text-zinc-400 mb-1">
+                    {t.trainingStudio.schedulerLabel}
+                  </label>
+                  <select
+                    disabled={isTraining}
+                    value={scheduler}
+                    onChange={(e) => setScheduler(e.target.value as SchedulerType)}
+                    className="w-full px-3 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950"
+                  >
+                    <option value="none">{t.trainingStudio.schedulerNone}</option>
+                    <option value="cosine">{t.trainingStudio.schedulerCosine}</option>
+                    <option value="step">{t.trainingStudio.schedulerStep}</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-zinc-600 dark:text-zinc-400 mb-1">
+                    {t.trainingStudio.weightDecayLabel}
+                  </label>
+                  <input
+                    type="number"
+                    step={0.0001}
+                    min={0}
+                    max={0.05}
+                    disabled={isTraining}
+                    value={weightDecay}
+                    onChange={(e) => setWeightDecay(Math.max(0, Number(e.target.value) || 0))}
+                    className="w-full px-3 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 font-mono tabular-nums"
+                  />
+                </div>
+              </>
+            )}
+
             <label className="col-span-2 sm:col-span-4 flex items-center gap-2 text-xs cursor-pointer">
               <input
                 type="checkbox"
@@ -1047,6 +1450,32 @@ export function TrainingStudio({
               />
               <span>{t.trainingStudio.saveCheckpointsLabel}</span>
             </label>
+
+            {mode === 'expert' && selectedArch?.capabilities.multiLabel && (
+              <label className="col-span-2 sm:col-span-4 flex items-center gap-2 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  disabled={isTraining}
+                  checked={multiLabel}
+                  onChange={(e) => setMultiLabel(e.target.checked)}
+                  className="accent-red-600"
+                />
+                <span>{t.trainingStudio.multiLabelToggle}</span>
+              </label>
+            )}
+
+            {mode === 'expert' && selectedArch?.backendEngine === 'python_fastapi' && (
+              <label className="col-span-2 sm:col-span-4 flex items-center gap-2 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  disabled={isTraining}
+                  checked={exportOnnx}
+                  onChange={(e) => setExportOnnx(e.target.checked)}
+                  className="accent-red-600"
+                />
+                <span>Export ONNX (.onnx) after Python training</span>
+              </label>
+            )}
           </div>
         )}
 
@@ -1092,14 +1521,51 @@ export function TrainingStudio({
           </div>
         )}
 
+        {/* External Python / GPU Cost & Hardware Preflight Gate */}
+        {showCostGate && selectedArch && (
+          <div className="p-4 rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-950/30 space-y-3 text-xs">
+            <div className="flex items-center gap-2 font-semibold text-zinc-900 dark:text-zinc-100">
+              <AlertTriangle className="w-4 h-4 text-amber-600" />
+              <span>{t.trainingStudio.costGateTitle}</span>
+            </div>
+            <p className="text-zinc-700 dark:text-zinc-300">{t.trainingStudio.costGateWarning}</p>
+            <div className="font-mono text-[11px] text-zinc-600 dark:text-zinc-400">
+              Model: {selectedArch.name} · Min RAM: {selectedArch.minRamGb} GB · GPU:{' '}
+              {selectedArch.gpuRequirement} · CUDA Ready:{' '}
+              {workerCaps?.cudaAvailable ? 'Yes' : 'CPU Fallback'}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleStartTraining(true)}
+                className="px-3.5 py-2 font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700"
+              >
+                {t.trainingStudio.costGateConfirmBtn}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowCostGate(false)}
+                className="px-3.5 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700"
+              >
+                {t.projectModal.cancel}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Action Bar */}
         <div className="flex flex-wrap items-center gap-3 pt-1">
           {!isTraining ? (
             <>
               <button
                 type="button"
-                disabled={!readiness.ready}
-                onClick={handleStartTraining}
+                disabled={
+                  !readiness.ready ||
+                  !selectedArch?.capabilities.training ||
+                  (selectedArch?.backendEngine === 'python_fastapi' &&
+                    !workerCompatibility.compatible)
+                }
+                onClick={() => void handleStartTraining(false)}
                 className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50"
               >
                 <Play className="w-4 h-4" />

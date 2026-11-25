@@ -224,8 +224,8 @@ export function CreateProjectModal({
             <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
               {t.projectModal.modeLabel}
             </label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {(['beginner', 'advanced'] as const).map((m) => (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {(['beginner', 'advanced', 'expert'] as const).map((m) => (
                 <button
                   key={m}
                   type="button"
@@ -239,12 +239,16 @@ export function CreateProjectModal({
                   <p className="text-sm font-semibold">
                     {m === 'beginner'
                       ? t.projectModal.beginnerMode
-                      : t.projectModal.advancedMode}
+                      : m === 'advanced'
+                      ? t.projectModal.advancedMode
+                      : t.projectModal.expertMode}
                   </p>
                   <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5">
                     {m === 'beginner'
                       ? t.projectModal.beginnerDesc
-                      : t.projectModal.advancedDesc}
+                      : m === 'advanced'
+                      ? t.projectModal.advancedDesc
+                      : t.projectModal.expertDesc}
                   </p>
                 </button>
               ))}

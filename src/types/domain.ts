@@ -4,7 +4,7 @@ export type PlanTier = 'free' | 'pro' | 'enterprise';
 export type WorkspaceType = 'personal' | 'team';
 export type WorkspaceRole = 'owner' | 'admin' | 'trainer' | 'annotator' | 'viewer';
 export type StorageProvider = 'local' | 'cloud';
-export type TrainingMode = 'beginner' | 'advanced';
+export type TrainingMode = 'beginner' | 'advanced' | 'expert';
 export type ProjectStatus = 'draft' | 'dataset_ready' | 'training' | 'trained' | 'deployed';
 
 export type V1TaskType = 'image_classification' | 'object_detection';
@@ -32,9 +32,146 @@ export type ProjectStageTab =
 export type AppSection =
   | 'dashboard'
   | 'projects'
+  | 'model_hub'
   | 'workspaces'
   | 'architecture'
   | 'settings';
+
+export type ModelTierStatus =
+  | 'fully_supported'
+  | 'experimental'
+  | 'inference_only'
+  | 'external_gpu_required';
+
+export type FineTuningStrategy = 'frozen_head' | 'partial_finetune' | 'full_finetune';
+export type SchedulerType = 'none' | 'cosine' | 'step';
+export type PreprocessMode = 'zero_one' | 'neg1_pos1';
+export type FrameworkRuntime = 'tfjs' | 'pytorch' | 'ultralytics' | 'transformers' | 'onnx';
+export type TargetDeviceType = 'browser' | 'mobile_pwa' | 'desktop_gpu' | 'edge_cpu';
+export type OptimizationPriority = 'balanced' | 'accuracy' | 'speed' | 'small_size';
+
+export interface ModelCatalogSpec {
+  id: string;
+  name: string;
+  architecture: string;
+  family: string;
+  supportedTasks: AnyTaskType[];
+  tierStatus: ModelTierStatus;
+  backendEngine: TrainingBackendEngine;
+  runtime: FrameworkRuntime;
+  requiredPythonPackages: string[];
+  pretrainedAvailable: boolean;
+  pretrainedSourceLabel: string;
+  checkpointUrl?: string;
+  isGraphModel?: boolean;
+  preprocessMode: PreprocessMode;
+  recommendedInputSize: number;
+  parameterCountLabel: string;
+  parameterCountNum: number;
+  modelSizeMb: number;
+  minRamGb: number;
+  gpuRequirement: string;
+  cpuCompatible: boolean;
+  browserCompatible: boolean;
+  mobileCompatible: boolean;
+  capabilities: {
+    training: boolean;
+    fineTuning: boolean;
+    inference: boolean;
+    multiLabel: boolean;
+    zeroShot?: boolean;
+  };
+  supportedStrategies: FineTuningStrategy[];
+  exportFormats: string[];
+  license: string;
+  commercialRestrictionNote: string;
+  officialReferenceBenchmark: string;
+  docsUrl: string;
+  summaryEn: string;
+  summaryAr: string;
+}
+
+export interface CachedCheckpointRecord {
+  id: string;
+  catalogModelId: string;
+  checkpointUrl: string;
+  isGraphModel: boolean;
+  modelTopologyJson: string;
+  weightSpecsJson: string;
+  weightDataBase64: string;
+  sha256: string;
+  totalBytes: number;
+  downloadedAt: string;
+  verifiedAt: string;
+}
+
+export interface PythonWorkerCapabilities {
+  reachable: boolean;
+  torchInstalled: boolean;
+  torchvisionInstalled: boolean;
+  ultralyticsInstalled: boolean;
+  timmInstalled: boolean;
+  transformersInstalled: boolean;
+  onnxInstalled: boolean;
+  onnxruntimeInstalled: boolean;
+  paddleocrInstalled: boolean;
+  cudaAvailable: boolean;
+  mpsAvailable: boolean;
+  cpuCount: number;
+  supportedArchitectures: string[];
+}
+
+export interface ModelRecommendation {
+  spec: ModelCatalogSpec;
+  rank: number;
+  score: number;
+  compatible: boolean;
+  blockerReason?: string;
+  reasonsEn: string[];
+  reasonsAr: string[];
+  estimatedRamGb: number;
+  latencyTier: 'ultra_fast' | 'fast' | 'medium' | 'heavy';
+  recommendedConfig: {
+    fineTuningStrategy: FineTuningStrategy;
+    learningRate: number;
+    batchSize: number;
+    epochs: number;
+    inputSize: number;
+    scheduler: SchedulerType;
+    weightDecay: number;
+  };
+}
+
+export interface ModelComparisonRow {
+  modelId: string;
+  modelName: string;
+  architecture: string;
+  backendEngine: TrainingBackendEngine;
+  datasetId: string;
+  datasetVersion: number;
+  split: EvaluationSplitTarget;
+  isMatchingSplit: boolean;
+  primaryMetricName: 'accuracy' | 'mAP50';
+  primaryMetricValue: number;
+  f1Score: number;
+  precision: number;
+  recall: number;
+  avgLatencyMs: number;
+  weightSizeBytes: number;
+  parameterCount: number;
+  upstreamReferenceBenchmark: string;
+  preprocessMode: PreprocessMode;
+  fineTuningStrategy?: FineTuningStrategy;
+}
+
+export interface TrainingOptionsExtended {
+  fineTuningStrategy?: FineTuningStrategy;
+  scheduler?: SchedulerType;
+  weightDecay?: number;
+  multiLabel?: boolean;
+  preprocessMode?: PreprocessMode;
+  cloudCostApproved?: boolean;
+}
 
 export interface UserProfile {
   uid: string;

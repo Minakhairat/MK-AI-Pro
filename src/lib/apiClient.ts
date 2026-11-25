@@ -3,6 +3,9 @@ import type {
   AiEnginePingResponse,
   BackendHealthResponse,
   EpochMetricPoint,
+  FineTuningStrategy,
+  PythonWorkerCapabilities,
+  SchedulerType,
   TrainingHyperparameters,
   V1TaskType,
 } from '../types/domain';
@@ -86,6 +89,33 @@ export async function pingAiEngine(): Promise<AiEnginePingResponse> {
   }
 }
 
+export async function fetchAiEngineCapabilities(): Promise<PythonWorkerCapabilities> {
+  const fallback: PythonWorkerCapabilities = {
+    reachable: false,
+    torchInstalled: false,
+    torchvisionInstalled: false,
+    ultralyticsInstalled: false,
+    timmInstalled: false,
+    transformersInstalled: false,
+    onnxInstalled: false,
+    onnxruntimeInstalled: false,
+    paddleocrInstalled: false,
+    cudaAvailable: false,
+    mpsAvailable: false,
+    cpuCount: 0,
+    supportedArchitectures: [],
+  };
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/ai-engine/capabilities', { headers });
+    const ct = res.headers.get('content-type') || '';
+    if (!res.ok || !ct.includes('application/json')) return fallback;
+    return (await res.json()) as PythonWorkerCapabilities;
+  } catch {
+    return fallback;
+  }
+}
+
 export async function verifyServerSession(): Promise<{
   authenticated: boolean;
   uid: string | null;
@@ -120,6 +150,11 @@ export async function startPythonTrainingJob(payload: {
   architecture: string;
   classes: string[];
   hyperparameters: TrainingHyperparameters;
+  fineTuningStrategy?: FineTuningStrategy;
+  scheduler?: SchedulerType;
+  weightDecay?: number;
+  multiLabel?: boolean;
+  exportOnnx?: boolean;
 }): Promise<PythonJobResponse> {
   const headers = await getAuthHeaders();
   const res = await fetch('/api/training/jobs', {

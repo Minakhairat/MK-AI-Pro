@@ -6,6 +6,7 @@ export interface TranslationDictionary {
   nav: {
     dashboard: string;
     projects: string;
+    modelHub: string;
     workspaces: string;
     architecture: string;
     settings: string;
@@ -92,6 +93,8 @@ export interface TranslationDictionary {
     beginnerDesc: string;
     advancedMode: string;
     advancedDesc: string;
+    expertMode: string;
+    expertDesc: string;
     storageLabel: string;
     localStorage: string;
     localStorageDesc: string;
@@ -344,6 +347,29 @@ export interface TranslationDictionary {
     errorRateLabel: string;
     map5095Label: string;
     meanIoULabel: string;
+    modeExpertDesc: string;
+    recommenderTitle: string;
+    recommenderDesc: string;
+    targetDeviceLabel: string;
+    priorityLabel: string;
+    applyRecBtn: string;
+    strategyLabel: string;
+    strategyFrozen: string;
+    strategyPartial: string;
+    strategyFull: string;
+    schedulerLabel: string;
+    schedulerNone: string;
+    schedulerCosine: string;
+    schedulerStep: string;
+    weightDecayLabel: string;
+    multiLabelToggle: string;
+    checkpointCachedBadge: string;
+    checkpointNeedsDownloadBadge: string;
+    downloadCheckpointBtn: string;
+    inferenceOnlyBlockedBadge: string;
+    costGateTitle: string;
+    costGateConfirmBtn: string;
+    costGateWarning: string;
   };
   evaluationStudio: {
     heading: string;
@@ -424,6 +450,27 @@ export interface TranslationDictionary {
     continueAppBuilderBtn: string;
     deleteModelBtn: string;
     confirmDeleteBtn: string;
+    catalogTitle: string;
+    catalogTab: string;
+    trainedTab: string;
+    tierFullySupported: string;
+    tierExperimental: string;
+    tierInferenceOnly: string;
+    tierExternalGpu: string;
+    allTasksFilter: string;
+    checkpointCacheTitle: string;
+    downloadAndVerifyBtn: string;
+    verifyIntegrityBtn: string;
+    cachedStatus: string;
+    cocoTesterTitle: string;
+    cocoTesterDesc: string;
+    uploadCocoTestBtn: string;
+    useInProjectBtn: string;
+    sameSplitBenchmarkTitle: string;
+    userDatasetMetricsBadge: string;
+    officialReferenceBadge: string;
+    datasetMismatchWarning: string;
+    verifyBundleBtn: string;
   };
   appBuilder: {
     heading: string;
@@ -603,6 +650,7 @@ export const translations: Record<Locale, TranslationDictionary> = {
     nav: {
       dashboard: 'Dashboard',
       projects: 'Projects',
+      modelHub: 'Model Hub',
       workspaces: 'Workspaces',
       architecture: 'System & Roadmap',
       settings: 'Account & Security',
@@ -695,6 +743,8 @@ export const translations: Record<Locale, TranslationDictionary> = {
       beginnerDesc: 'Automatic architecture & hyperparameter selection.',
       advancedMode: 'Advanced Mode',
       advancedDesc: 'Full control over epochs, batch size, optimizer, and thresholds.',
+      expertMode: 'Expert Mode',
+      expertDesc: 'Fine-tuning strategy, LR schedulers, L2 decay, multi-label & ONNX.',
       storageLabel: 'Storage & Privacy Boundary',
       localStorage: 'Local First (Private)',
       localStorageDesc: 'Keep datasets on device / local workspace unless explicitly synced.',
@@ -956,6 +1006,29 @@ export const translations: Record<Locale, TranslationDictionary> = {
       errorRateLabel: 'Error Rate',
       map5095Label: 'mAP@0.5:0.95',
       meanIoULabel: 'Mean IoU',
+      modeExpertDesc: 'Expert Mode exposes transfer learning layer unfreezing, LR schedulers (Cosine/Step), L2 weight decay, and multi-label loss.',
+      recommenderTitle: 'Intelligent Model Recommender',
+      recommenderDesc: 'Ranks verified architectures for your dataset size, target hardware, and optimization goal.',
+      targetDeviceLabel: 'Target Device',
+      priorityLabel: 'Optimization Goal',
+      applyRecBtn: 'Apply Config',
+      strategyLabel: 'Fine-Tuning Strategy',
+      strategyFrozen: 'Frozen Backbone + Trainable Head (Linear Probe)',
+      strategyPartial: 'Partial Fine-Tuning (Unfreeze Top Conv Block)',
+      strategyFull: 'Full End-to-End Fine-Tuning',
+      schedulerLabel: 'LR Scheduler',
+      schedulerNone: 'Constant LR',
+      schedulerCosine: 'Cosine Annealing',
+      schedulerStep: 'Step Decay',
+      weightDecayLabel: 'L2 Weight Decay',
+      multiLabelToggle: 'Multi-Label Sigmoid Classification (BCE Loss)',
+      checkpointCachedBadge: 'Pretrained Checkpoint Verified (Offline Ready)',
+      checkpointNeedsDownloadBadge: 'Pretrained Weights Will Download & Verify on Train',
+      downloadCheckpointBtn: 'Download & Verify Checkpoint',
+      inferenceOnlyBlockedBadge: 'Inference-Only Model (Training Not Supported)',
+      costGateTitle: 'External GPU / Python Worker Preflight Confirmation',
+      costGateConfirmBtn: 'Confirm Hardware & Dispatch Training',
+      costGateWarning: 'This model runs on the connected Python FastAPI GPU/CPU worker instead of your local browser. Confirm worker resources before dispatching.',
     },
     evaluationStudio: {
       heading: 'Model Evaluation Studio',
@@ -1036,6 +1109,27 @@ export const translations: Record<Locale, TranslationDictionary> = {
       continueAppBuilderBtn: 'Use in App Builder',
       deleteModelBtn: 'Delete Model',
       confirmDeleteBtn: 'Confirm Delete',
+      catalogTitle: 'Foundation Model Hub Catalog',
+      catalogTab: 'Foundation Catalog & Checkpoints',
+      trainedTab: 'Project Trained Models & Benchmarks',
+      tierFullySupported: 'Fully Supported',
+      tierExperimental: 'Experimental',
+      tierInferenceOnly: 'Inference-Only',
+      tierExternalGpu: 'External GPU',
+      allTasksFilter: 'All Tasks',
+      checkpointCacheTitle: 'Pretrained Checkpoints & Browser COCO Tester',
+      downloadAndVerifyBtn: 'Download & Verify SHA-256',
+      verifyIntegrityBtn: 'Verify Integrity',
+      cachedStatus: 'Cached & Verified',
+      cocoTesterTitle: 'Pretrained COCO 80-Class Object Detector (Inference-Only)',
+      cocoTesterDesc: 'Runs real TF.js SSDLite MobileNetV2 GraphModel forward pass in your browser. Not trainable.',
+      uploadCocoTestBtn: 'Test Image with COCO Detector',
+      useInProjectBtn: 'Train with this Model',
+      sameSplitBenchmarkTitle: 'Same-Dataset Cross-Model Benchmark',
+      userDatasetMetricsBadge: 'Your Dataset Metrics',
+      officialReferenceBadge: 'Official Upstream Reference',
+      datasetMismatchWarning: 'Dataset or version differs from active split — re-evaluate for fair comparison.',
+      verifyBundleBtn: 'Verify Export Reload',
     },
     appBuilder: {
       heading: 'MK App Builder & Standalone PWA Studio',
@@ -1218,6 +1312,7 @@ export const translations: Record<Locale, TranslationDictionary> = {
     nav: {
       dashboard: 'لوحة التحكم',
       projects: 'المشروعات',
+      modelHub: 'مركز النماذج',
       workspaces: 'مساحات العمل',
       architecture: 'المعمارية وخارطة الطريق',
       settings: 'الحساب والأمان',
@@ -1310,6 +1405,8 @@ export const translations: Record<Locale, TranslationDictionary> = {
       beginnerDesc: 'اختيار تلقائي للبنية والإعدادات المثلى.',
       advancedMode: 'النمط المتقدم (Advanced)',
       advancedDesc: 'تحكم كامل في Epochs و Batch Size و Optimizer والعتبات.',
+      expertMode: 'النمط الاحترافي (Expert)',
+      expertDesc: 'تخصيص الضبط الدقيق وجدولة التعلم و L2 Decay والتصنيف متعدد التسميات.',
       storageLabel: 'مكان التخزين والخصوصية',
       localStorage: 'محلي أولاً (خاص)',
       localStorageDesc: 'حفظ البيانات محلياً وعدم رفعها للسحابة إلا بموافقتك.',
@@ -1571,6 +1668,29 @@ export const translations: Record<Locale, TranslationDictionary> = {
       errorRateLabel: 'نسبة الخطأ',
       map5095Label: 'mAP@0.5:0.95',
       meanIoULabel: 'متوسط IoU',
+      modeExpertDesc: 'النمط الاحترافي يتيح فك تجميد الطبقات وجدولة معدل التعلم (Cosine/Step) و L2 Decay والتصنيف متعدد التسميات.',
+      recommenderTitle: 'الموصي الذكي بالنماذج',
+      recommenderDesc: 'يرشح أفضل المعماريات الموثقة حسب حجم بياناتك والجهاز المستهدف وأولوية الأداء.',
+      targetDeviceLabel: 'الجهاز المستهدف',
+      priorityLabel: 'أولوية التحسين',
+      applyRecBtn: 'تطبيق الإعدادات',
+      strategyLabel: 'استراتيجية الضبط الدقيق',
+      strategyFrozen: 'تجميد الأساس + تدريب الرأس (Linear Probe)',
+      strategyPartial: 'ضبط دقيق جزئي (فك تجميد الكتلة الأخيرة)',
+      strategyFull: 'ضبط دقيق كامل (Full Fine-Tuning)',
+      schedulerLabel: 'جدولة معدل التعلم',
+      schedulerNone: 'ثابت (Constant)',
+      schedulerCosine: 'Cosine Annealing',
+      schedulerStep: 'انخفاض تدريجي (Step Decay)',
+      weightDecayLabel: 'معامل L2 Weight Decay',
+      multiLabelToggle: 'تصنيف متعدد الفئات (Multi-Label Sigmoid)',
+      checkpointCachedBadge: 'الأوزان المُدرّبة مسبقاً موثقة (جاهز أوفلاين)',
+      checkpointNeedsDownloadBadge: 'سيتم تنزيل وتوثيق الأوزان المُدرّبة مسبقاً عند التدريب',
+      downloadCheckpointBtn: 'تنزيل وتوثيق الأوزان',
+      inferenceOnlyBlockedBadge: 'نموذج للاستدلال فقط (لا يدعم التدريب)',
+      costGateTitle: 'تأكيد موارد خادم GPU/Python الخارجي',
+      costGateConfirmBtn: 'تأكيد الموارد وإرسال التدريب',
+      costGateWarning: 'سيتم تشغيل هذا النموذج على خادم Python FastAPI الخارجي وليس في المتصفح. يرجى تأكيد جاهزية الخادم قبل البدء.',
     },
     evaluationStudio: {
       heading: 'استوديو تقييم ومقارنة النماذج',
@@ -1651,6 +1771,27 @@ export const translations: Record<Locale, TranslationDictionary> = {
       continueAppBuilderBtn: 'استخدام في منشئ التطبيقات',
       deleteModelBtn: 'حذف النموذج',
       confirmDeleteBtn: 'تأكيد الحذف',
+      catalogTitle: 'كتالوج النماذج التأسيسية MK AI',
+      catalogTab: 'الكتالوج التأسيسي والأوزان المسبقة',
+      trainedTab: 'نماذج المشروع المدربة والمقارنة',
+      tierFullySupported: 'مدعوم بالكامل',
+      tierExperimental: 'تجريبي',
+      tierInferenceOnly: 'استدلال فقط',
+      tierExternalGpu: 'يتطلب خادم GPU',
+      allTasksFilter: 'كل المهام',
+      checkpointCacheTitle: 'الأوزان المُدرّبة مسبقاً ومختبر COCO الحي',
+      downloadAndVerifyBtn: 'تنزيل والتحقق SHA-256',
+      verifyIntegrityBtn: 'فحص السلامة',
+      cachedStatus: 'محفوظ وموثق محلياً',
+      cocoTesterTitle: 'كاشف COCO 80 فئة المُدرّب مسبقاً (للاستدلال فقط)',
+      cocoTesterDesc: 'يشغل نموذج SSDLite MobileNetV2 حقيقي داخل المتصفح مباشرة. غير قابل لإعادة التدريب.',
+      uploadCocoTestBtn: 'اختبار صورة بكاشف COCO',
+      useInProjectBtn: 'التدريب بهذا النموذج',
+      sameSplitBenchmarkTitle: 'مقارنة النماذج على نفس تقسيم البيانات',
+      userDatasetMetricsBadge: 'نتائج بياناتك الفعلية',
+      officialReferenceBadge: 'مرجع رسمي للمعمارية',
+      datasetMismatchWarning: 'يختلف إصدار البيانات أو التقسيم — أعد التقييم للمقارنة العادلة.',
+      verifyBundleBtn: 'التحقق من إعادة تحميل الحزمة',
     },
     appBuilder: {
       heading: 'منشئ التطبيقات MK App Builder وحزم PWA المستقلة',

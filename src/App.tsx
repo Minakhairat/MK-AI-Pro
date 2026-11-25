@@ -11,6 +11,7 @@ import { OfflineIndicator } from './components/common/OfflineIndicator';
 import { DashboardView } from './components/dashboard/DashboardView';
 import { Sidebar } from './components/layout/Sidebar';
 import { TopBar } from './components/layout/TopBar';
+import { ModelHubView } from './components/models/ModelHubView';
 import { CreateProjectModal } from './components/projects/CreateProjectModal';
 import { ProjectWorkspaceView } from './components/projects/ProjectWorkspaceView';
 import { AccountSettingsView } from './components/settings/AccountSettingsView';
@@ -87,7 +88,7 @@ function WorkspaceShell() {
 
   const breadcrumbs = activeProject
     ? [t.brandName, t.nav.projects, activeProject.name]
-    : [t.brandName, t.nav[section]];
+    : [t.brandName, section === 'model_hub' ? t.nav.modelHub : t.nav[section]];
 
   return (
     <div className="min-h-screen flex bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
@@ -130,6 +131,10 @@ function WorkspaceShell() {
                 setSelectedProjectId(proj.id);
               }}
             />
+          ) : section === 'model_hub' ? (
+            <div className="max-w-7xl mx-auto">
+              <ModelHubView />
+            </div>
           ) : section === 'workspaces' ? (
             <WorkspacesView workspaces={workspaces} />
           ) : section === 'architecture' ? (

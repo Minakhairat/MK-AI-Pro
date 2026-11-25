@@ -34,6 +34,7 @@ import {
   listStoredModelKeys,
   loadTfModelFromIndexedDb,
 } from '../../lib/localModelStore';
+import { getPreprocessModeForArchitecture } from '../../lib/modelRegistry';
 import { predictImageWithLocalModel } from '../../lib/tfTrainer';
 import {
   createGeneratedApp,
@@ -442,6 +443,7 @@ export function AppBuilderStudio({
           imageBlob: frameBlob,
           confidenceThreshold,
           iouThreshold,
+          preprocessMode: getPreprocessModeForArchitecture(selectedModel.architecture),
         });
 
         // Re-draw clean frame + overlay bounding boxes if detection

@@ -107,3 +107,8 @@ test('GeneratedApp enforces PWA bounds, customIconDataUrl allowlist, on-device c
   assert.match(rulesContent, /onDeviceCompatible\s*==\s*true/);
 });
 
+test('Project and TrainingRun support beginner, advanced, and expert training modes', () => {
+  const modeMatches = rulesContent.match(/data\.trainingMode\s+in\s+\['beginner',\s*'advanced',\s*'expert'\]/g);
+  assert.ok(modeMatches && modeMatches.length === 2);
+});
+

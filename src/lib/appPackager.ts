@@ -1,4 +1,5 @@
 import type { StoredModelArtifact } from './localModelStore.ts';
+import { getPreprocessModeForArchitecture } from './modelRegistry.ts';
 import type { GeneratedApp, Locale, TrainedModel } from '../types/domain.ts';
 
 function slugifyAppName(name: string): string {
@@ -191,12 +192,16 @@ export function buildStandaloneHtmlApp(params: {
   const isDark = app.backgroundColor === 'dark';
   const dir = locale === 'ar' ? 'rtl' : 'ltr';
 
+  const preprocessMode =
+    artifact?.preprocessMode ?? getPreprocessModeForArchitecture(model.architecture);
+
   const embeddedModelPayload = artifact
     ? {
         available: true,
         taskType: model.taskType,
         classes: model.classes,
         inputSize: model.inputSize,
+        preprocessMode,
         modelTopology: artifact.modelTopology,
         weightSpecs: artifact.weightSpecs,
         weightDataBase64: arrayBufferToBase64Portable(artifact.weightData),
@@ -206,6 +211,7 @@ export function buildStandaloneHtmlApp(params: {
         taskType: model.taskType,
         classes: model.classes,
         inputSize: model.inputSize,
+        preprocessMode,
       };
 
   const runtimeConfig = {
@@ -466,12 +472,11 @@ export function buildStandaloneHtmlApp(params: {
         prepCtx.drawImage(sourceEl, (bundle.inputSize - dw) / 2, (bundle.inputSize - dh) / 2, dw, dh);
 
         const t0 = performance.now();
-        const input = tf.tidy(() =>
-          tf.browser.fromPixels(prepCanvas)
-            .toFloat()
-            .div(255.0)
-            .expandDims(0)
-        );
+        const input = tf.tidy(() => {
+          const base = tf.browser.fromPixels(prepCanvas).toFloat();
+          const norm = bundle.preprocessMode === 'neg1_pos1' ? base.div(127.5).sub(1.0) : base.div(255.0);
+          return norm.expandDims(0);
+        });
         const out = model.predict(input);
         const data = await out.data();
         input.dispose();

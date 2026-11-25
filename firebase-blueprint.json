@@ -193,7 +193,7 @@
         },
         "trainingMode": {
           "type": "string",
-          "enum": ["beginner", "advanced"]
+          "enum": ["beginner", "advanced", "expert"]
         },
         "storageLocation": {
           "type": "string",
@@ -541,7 +541,7 @@
         },
         "trainingMode": {
           "type": "string",
-          "enum": ["beginner", "advanced"]
+          "enum": ["beginner", "advanced", "expert"]
         },
         "hyperparameters": {
           "type": "object"

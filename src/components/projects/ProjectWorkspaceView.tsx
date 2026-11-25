@@ -70,6 +70,7 @@ export function ProjectWorkspaceView({
   const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(null);
   const [datasetItems, setDatasetItems] = useState<DatasetItem[]>([]);
   const [annotatorTargetItemId, setAnnotatorTargetItemId] = useState<string | null>(null);
+  const [preselectedArchId, setPreselectedArchId] = useState<string | null>(null);
 
   // Phase 3, Phase 4 & Phase 5 Training Runs, Trained Models, Evaluation Reports & Generated Apps
   const [trainingRuns, setTrainingRuns] = useState<TrainingRun[]>([]);
@@ -388,6 +389,7 @@ export function ProjectWorkspaceView({
               items={datasetItems}
               trainingRuns={trainingRuns}
               trainedModels={trainedModels}
+              initialArchId={preselectedArchId}
               onSelectDataset={(dsId) => setSelectedDatasetId(dsId)}
             />
           )}
@@ -407,9 +409,14 @@ export function ProjectWorkspaceView({
           {activeTab === 'model_hub' && (
             <ModelHubView
               project={project}
+              datasets={datasets}
+              activeDataset={activeDataset}
               trainedModels={trainedModels}
               evaluationReports={evaluationReports}
-              onOpenTraining={() => setActiveTab('training')}
+              onOpenTraining={(archId) => {
+                setPreselectedArchId(archId || null);
+                setActiveTab('training');
+              }}
               onOpenAppBuilder={() => setActiveTab('app_builder')}
             />
           )}
@@ -469,6 +476,7 @@ export function ProjectWorkspaceView({
                     >
                       <option value="beginner">{t.projectModal.beginnerMode}</option>
                       <option value="advanced">{t.projectModal.advancedMode}</option>
+                      <option value="expert">{t.projectModal.expertMode}</option>
                     </select>
                   </div>
                 </div>
@@ -602,7 +610,9 @@ export function ProjectWorkspaceView({
                 <span className="font-medium">
                   {project.trainingMode === 'beginner'
                     ? t.projectModal.beginnerMode
-                    : t.projectModal.advancedMode}
+                    : project.trainingMode === 'advanced'
+                    ? t.projectModal.advancedMode
+                    : t.projectModal.expertMode}
                 </span>
               </div>
               <div className="flex items-center justify-between">

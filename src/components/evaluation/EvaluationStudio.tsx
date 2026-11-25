@@ -13,6 +13,10 @@ import {
 import { useI18n } from '../../contexts/I18nContext';
 import { getMediaBlob } from '../../lib/localMediaStore';
 import { listStoredModelKeys, loadTfModelFromIndexedDb } from '../../lib/localModelStore';
+import {
+  getModelCatalogEntry,
+  getPreprocessModeForArchitecture,
+} from '../../lib/modelRegistry';
 import { evaluateLocalModelOnItems, predictImageWithLocalModel } from '../../lib/tfTrainer';
 import {
   deleteEvaluationReport,
@@ -272,6 +276,9 @@ export function EvaluationStudio({
           split: splitTarget,
           confidenceThreshold: confThreshold,
           iouThreshold,
+          preprocessMode:
+            loaded.record.preprocessMode ??
+            getPreprocessModeForArchitecture(selectedModel.architecture),
           onProgress: (done, total) => setBatchProgress({ done, total }),
         });
         setBatchResult(res);
@@ -344,6 +351,9 @@ export function EvaluationStudio({
           imageBlob: blob,
           confidenceThreshold: confThreshold,
           iouThreshold,
+          preprocessMode:
+            loaded.record.preprocessMode ??
+            getPreprocessModeForArchitecture(selectedModel.architecture),
         });
         setLivePred(pred);
       } finally {
@@ -974,6 +984,9 @@ export function EvaluationStudio({
                   <th className="py-2.5 text-end font-medium">{ts.modelSizeLabel}</th>
                   <th className="py-2.5 text-end font-medium">{ts.paramsLabel}</th>
                   <th className="py-2.5 text-end font-medium">Dataset</th>
+                  <th className="py-2.5 text-start ps-4 font-medium">
+                    {t.modelHub.officialReferenceBadge}
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -984,15 +997,27 @@ export function EvaluationStudio({
                   const isBestF1 = m.f1Score > 0 && m.f1Score === bestF1;
                   const isFastest =
                     m.inferenceLatencyMs > 0 && m.inferenceLatencyMs === fastestLatency;
+                  const spec = getModelCatalogEntry(m.architecture);
+                  const datasetMatchesActive =
+                    !activeDataset ||
+                    (m.datasetId === activeDataset.id &&
+                      m.datasetVersion === activeDataset.version);
                   return (
                     <tr
                       key={m.id}
                       className="border-b border-zinc-100 dark:border-zinc-800/60 hover:bg-zinc-50 dark:hover:bg-zinc-950/60"
                     >
                       <td className="py-2.5 font-medium text-zinc-900 dark:text-zinc-100">
-                        {m.name}
+                        <div>{m.name}</div>
+                        {!datasetMatchesActive && (
+                          <div className="text-[10px] text-amber-700 dark:text-amber-400">
+                            {t.modelHub.datasetMismatchWarning}
+                          </div>
+                        )}
                       </td>
-                      <td className="py-2.5 text-zinc-500">{m.architecture}</td>
+                      <td className="py-2.5 text-zinc-500">
+                        {m.architecture} ({getPreprocessModeForArchitecture(m.architecture)})
+                      </td>
                       <td className="py-2.5 text-end font-mono">
                         <span className={isBestScore ? 'text-red-600 font-semibold' : ''}>
                           {Math.round(primaryVal * 100)}%
@@ -1015,6 +1040,9 @@ export function EvaluationStudio({
                         {m.parameterCount.toLocaleString()}
                       </td>
                       <td className="py-2.5 text-end font-mono">v{m.datasetVersion}</td>
+                      <td className="py-2.5 ps-4 text-zinc-500 max-w-[200px] truncate">
+                        {spec?.officialReferenceBenchmark || 'Local dataset only'}
+                      </td>
                     </tr>
                   );
                 })}

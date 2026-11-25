@@ -113,7 +113,7 @@ service cloud.firestore {
         && data.taskType in ['image_classification', 'object_detection']
         && data.engineVersion == 'v1.0'
         && data.status in ['draft', 'dataset_ready', 'training', 'trained', 'deployed']
-        && data.trainingMode in ['beginner', 'advanced']
+        && data.trainingMode in ['beginner', 'advanced', 'expert']
         && data.storageLocation in ['local', 'cloud']
         && data.cloudConsentGranted is bool
         && (data.storageLocation == 'local' || data.cloudConsentGranted == true)
@@ -258,7 +258,7 @@ service cloud.firestore {
         && data.taskType in ['image_classification', 'object_detection']
         && data.backendEngine in ['tfjs_browser', 'python_fastapi']
         && data.architecture is string && data.architecture.size() >= 2 && data.architecture.size() <= 64
-        && data.trainingMode in ['beginner', 'advanced']
+        && data.trainingMode in ['beginner', 'advanced', 'expert']
         && isValidHyperparameters(data.hyperparameters)
         && data.status in ['queued', 'running', 'paused', 'completed', 'cancelled', 'failed']
         && data.currentEpoch is number && data.currentEpoch >= 0 && data.currentEpoch <= 200
