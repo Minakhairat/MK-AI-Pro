@@ -230,6 +230,30 @@ export interface EpochMetricPoint {
   durationMs: number;
 }
 
+export interface TrainingDiagnostics {
+  trainableParamCount: number;
+  initialGradientNorm: number;
+  epoch1ParamDelta: number;
+  hasNonZeroGradients: boolean;
+  allLossesFinite: boolean;
+  parametersUpdated: boolean;
+}
+
+export interface SanityTestResult {
+  passed: boolean;
+  taskType: V1TaskType;
+  architecture: string;
+  sampleCount: number;
+  stepsExecuted: number;
+  initialLoss: number;
+  finalLoss: number;
+  lossReductionPct: number;
+  paramDelta: number;
+  hasNonZeroGradients: boolean;
+  subsetAccuracy: number;
+  details: string[];
+}
+
 export interface TrainingRun {
   id: string;
   projectId: string;
@@ -350,10 +374,13 @@ export interface BatchEvaluationResult {
   confidenceThreshold: number;
   iouThreshold: number;
   accuracy: number;
+  errorRate?: number;
   precision: number;
   recall: number;
   f1Score: number;
   mAP50: number;
+  mAP50_95?: number;
+  meanIoU?: number;
   avgLatencyMs: number;
   p95LatencyMs: number;
   confusionLabels: string[];
@@ -415,6 +442,7 @@ export interface GeneratedApp {
   showHistory: boolean;
   allowCsvExport: boolean;
   customHeaderTitle: string;
+  customIconDataUrl?: string;
   alertEnabled: boolean;
   alertTargetClass: string;
   alertMinConfidence: number;
@@ -430,6 +458,7 @@ export interface BackendHealthResponse {
   phase: string;
   timestamp: string;
   uptimeSeconds: number;
+  staticHosting?: boolean;
   adapters: {
     storage: {
       provider: string;
@@ -437,6 +466,7 @@ export interface BackendHealthResponse {
       configured: boolean;
       supportsPrivateLocalFirst: boolean;
       description: string;
+      validationErrors?: string[];
     };
     compute: {
       provider: string;

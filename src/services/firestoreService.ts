@@ -656,6 +656,7 @@ export async function addDatasetItem(params: {
   classificationLabel: string;
   annotations: BoundingBox[];
   blurScore: number;
+  isApproved?: boolean;
 }): Promise<DatasetItem> {
   const itemId = makeId('img');
   const item: DatasetItem = {
@@ -674,7 +675,7 @@ export async function addDatasetItem(params: {
     classificationLabel: params.classificationLabel.trim().slice(0, 80),
     annotations: params.annotations.slice(0, 100),
     blurScore: Math.max(0, params.blurScore),
-    isApproved: false,
+    isApproved: Boolean(params.isApproved),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
@@ -1255,6 +1256,18 @@ function normalizeInputSources(sources: AppInputSource[]): AppInputSource[] {
   return valid.length > 0 ? valid : ['upload'];
 }
 
+function sanitizeCustomIconDataUrl(value?: string | null): string {
+  if (!value) return '';
+  const trimmed = value.trim();
+  if (
+    trimmed.length <= 150000 &&
+    /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(trimmed)
+  ) {
+    return trimmed;
+  }
+  return '';
+}
+
 export async function createGeneratedApp(params: {
   ownerUid: string;
   projectId: string;
@@ -1279,6 +1292,7 @@ export async function createGeneratedApp(params: {
   alertEnabled: boolean;
   alertTargetClass: string;
   alertMinConfidence: number;
+  customIconDataUrl?: string;
   currentAppCount: number;
   projectStatus: ProjectStatus;
 }): Promise<GeneratedApp> {
@@ -1319,6 +1333,7 @@ export async function createGeneratedApp(params: {
     alertEnabled: Boolean(params.alertEnabled),
     alertTargetClass: params.alertTargetClass.trim().slice(0, 80),
     alertMinConfidence: clamp01(params.alertMinConfidence),
+    customIconDataUrl: sanitizeCustomIconDataUrl(params.customIconDataUrl),
     status: 'ready',
     version: 1,
     createdAt: serverTimestamp(),
@@ -1369,6 +1384,7 @@ export async function updateGeneratedApp(params: {
   alertEnabled: boolean;
   alertTargetClass: string;
   alertMinConfidence: number;
+  customIconDataUrl?: string;
   status: GeneratedAppStatus;
   nextVersion: number;
 }): Promise<void> {
@@ -1401,6 +1417,7 @@ export async function updateGeneratedApp(params: {
       alertEnabled: Boolean(params.alertEnabled),
       alertTargetClass: params.alertTargetClass.trim().slice(0, 80),
       alertMinConfidence: clamp01(params.alertMinConfidence),
+      customIconDataUrl: sanitizeCustomIconDataUrl(params.customIconDataUrl),
       status: params.status,
       version: Math.max(1, Math.min(1000, Math.round(params.nextVersion))),
       updatedAt: serverTimestamp(),

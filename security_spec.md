@@ -21,6 +21,7 @@
    - `epochMetrics` is bounded `<= 200`, `confusionLabels` `<= 50`, `confusionFlat` `<= 2500`, `perClassMetrics` `<= 50`, and `totalEpochs` bounded `[1, 200]`.
 7. **PWA & App Builder Compatibility Guard**:
    - `GeneratedApp.shortName` length is strictly bounded `[1, 12]` for PWA home-screen compliance; `themeColor` must match `^#[0-9a-fA-F]{6}$`; `inputSources` must be `1..3` items strictly from `['camera', 'upload', 'video']`.
+   - `GeneratedApp.customIconDataUrl` is bounded `<= 150000` chars and must be empty or match `^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$`.
    - Selecting `runtimeTarget == 'on_device_pwa'` requires the referenced `/trainedModels/{modelId}` document to have `onDeviceCompatible == true`.
 8. **Bounded Arrays & Media Validation**:
    - `classes` list is bounded `<= 50` items (first element validated as string if non-empty).

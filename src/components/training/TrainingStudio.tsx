@@ -27,7 +27,13 @@ import {
   MODEL_ARCHITECTURES,
   predictImageWithLocalModel,
   runBrowserTrainingPipeline,
+  runDatasetOverfittingSanityTest,
 } from '../../lib/tfTrainer';
+import {
+  validateDatasetForTraining,
+  type DatasetTrainingValidationResult,
+} from '../../lib/datasetUtils';
+import { listStoredDatasetBlobIds } from '../../lib/localMediaStore';
 import {
   createTrainingRun,
   deleteTrainedModel,
@@ -44,7 +50,9 @@ import type {
   EpochMetricPoint,
   InferencePrediction,
   Project,
+  SanityTestResult,
   TrainedModel,
+  TrainingDiagnostics,
   TrainingHyperparameters,
   TrainingMode,
   TrainingRun,
@@ -264,47 +272,59 @@ export function TrainingStudio({
     }
   };
 
-  // Dataset Readiness
-  const readiness = useMemo(() => {
+  // Dataset Readiness & Blob Verification
+  const [availableBlobIds, setAvailableBlobIds] = useState<Set<string> | undefined>(undefined);
+  useEffect(() => {
     if (!activeDataset) {
+      setAvailableBlobIds(undefined);
+      return;
+    }
+    let active = true;
+    listStoredDatasetBlobIds(activeDataset.id)
+      .then((ids) => {
+        if (active) setAvailableBlobIds(ids);
+      })
+      .catch(() => {
+        if (active) setAvailableBlobIds(undefined);
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeDataset?.id, items.length]);
+
+  const datasetValidation: DatasetTrainingValidationResult | null = useMemo(() => {
+    if (!activeDataset) return null;
+    return validateDatasetForTraining({
+      dataset: activeDataset,
+      items,
+      taskType: project.taskType,
+      availableBlobIds,
+    });
+  }, [activeDataset, items, project.taskType, availableBlobIds]);
+
+  const readiness = useMemo(() => {
+    if (!activeDataset || !datasetValidation) {
       return { ready: false, reason: t.trainingStudio.datasetGateEmpty, trainCount: 0, valCount: 0, testCount: 0 };
     }
-    const isAnnotated = (it: DatasetItem) =>
-      project.taskType === 'image_classification'
-        ? it.classificationLabel.trim().length > 0 && activeDataset.classes.includes(it.classificationLabel)
-        : it.annotations.some((b) => activeDataset.classes.includes(b.className));
-
-    const trainCount = items.filter((it) => it.split === 'train' && isAnnotated(it)).length;
-    const valCount = items.filter((it) => it.split === 'val' && isAnnotated(it)).length;
-    const testCount = items.filter((it) => it.split === 'test' && isAnnotated(it)).length;
-
-    if (activeDataset.classes.length === 0 || trainCount < 2) {
+    const { splitCounts } = datasetValidation.stats;
+    if (!datasetValidation.valid) {
       return {
         ready: false,
-        reason: t.trainingStudio.datasetGateNeedAnnotated,
-        trainCount,
-        valCount,
-        testCount,
-      };
-    }
-    if (project.taskType === 'image_classification' && activeDataset.classes.length < 2) {
-      return {
-        ready: false,
-        reason: t.trainingStudio.datasetGateNeedAnnotated,
-        trainCount,
-        valCount,
-        testCount,
+        reason: datasetValidation.errors[0] || t.trainingStudio.datasetGateNeedAnnotated,
+        trainCount: splitCounts.train,
+        valCount: splitCounts.val,
+        testCount: splitCounts.test,
       };
     }
 
     return {
       ready: true,
       reason: t.trainingStudio.datasetGateReady,
-      trainCount,
-      valCount,
-      testCount,
+      trainCount: splitCounts.train,
+      valCount: splitCounts.val,
+      testCount: splitCounts.test,
     };
-  }, [activeDataset, items, project.taskType, t]);
+  }, [activeDataset, datasetValidation, t]);
 
   // Live training state & control refs
   const [isTraining, setIsTraining] = useState(false);
@@ -317,6 +337,16 @@ export function TrainingStudio({
   const [liveHardware, setLiveHardware] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
   const [trainError, setTrainError] = useState<string | null>(null);
+  const [lastDiagnostics, setLastDiagnostics] = useState<TrainingDiagnostics | null>(null);
+  const [lastExtraMetrics, setLastExtraMetrics] = useState<{
+    mAP50_95?: number;
+    meanIoU?: number;
+  } | null>(null);
+
+  // Overfitting sanity check state
+  const [sanityBusy, setSanityBusy] = useState(false);
+  const [sanityResult, setSanityResult] = useState<SanityTestResult | null>(null);
+  const [sanityErr, setSanityErr] = useState<string | null>(null);
 
   const pauseRef = useRef(false);
   const cancelRef = useRef(false);
@@ -324,6 +354,27 @@ export function TrainingStudio({
   const appendLog = (line: string) => {
     const stamp = new Date().toLocaleTimeString([], { hour12: false });
     setLogs((prev) => [...prev.slice(-120), `[${stamp}] ${line}`]);
+  };
+
+  const handleRunSanityCheck = async () => {
+    if (!activeDataset || !selectedArch) return;
+    setSanityBusy(true);
+    setSanityErr(null);
+    setSanityResult(null);
+    try {
+      const res = await runDatasetOverfittingSanityTest({
+        taskType: project.taskType,
+        architecture: selectedArch.id,
+        dataset: activeDataset,
+        items,
+        inputSize: hp.inputSize,
+      });
+      setSanityResult(res);
+    } catch (err) {
+      setSanityErr(err instanceof Error ? err.message : 'Sanity test failed.');
+    } finally {
+      setSanityBusy(false);
+    }
   };
 
   const handleStartTraining = async () => {
@@ -459,6 +510,11 @@ export function TrainingStudio({
       });
 
       setLiveHardware(result.hardwareSummary);
+      setLastDiagnostics(result.diagnostics || null);
+      setLastExtraMetrics({
+        mAP50_95: result.mAP50_95,
+        meanIoU: result.meanIoU,
+      });
 
       if (result.status === 'cancelled') {
         await updateTrainingRunProgress({
@@ -705,24 +761,40 @@ export function TrainingStudio({
           </div>
         </div>
 
-        {/* Dataset Readiness Banner */}
+        {/* Dataset Readiness & Validation Banner */}
         <div
-          className={`rounded-lg border p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+          className={`rounded-lg border p-3.5 space-y-2 text-xs ${
             readiness.ready
               ? 'border-emerald-300 dark:border-emerald-900/60 bg-emerald-50/40 dark:bg-emerald-950/15'
               : 'border-amber-300 dark:border-amber-900/60 bg-amber-50/40 dark:bg-amber-950/15'
           }`}
         >
-          <div className="space-y-0.5">
-            <p className="font-semibold text-zinc-900 dark:text-zinc-100">
-              {t.trainingStudio.datasetGateTitle}
-            </p>
-            <p className="text-zinc-600 dark:text-zinc-400">{readiness.reason}</p>
-          </div>
-          {activeDataset && (
-            <div className="font-mono tabular-nums text-[11px] text-zinc-700 dark:text-zinc-300 shrink-0">
-              Train {readiness.trainCount} · Val {readiness.valCount} · Test {readiness.testCount}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <p className="font-semibold text-zinc-900 dark:text-zinc-100">
+                {t.trainingStudio.datasetGateTitle}
+              </p>
+              <p className="text-zinc-600 dark:text-zinc-400">{readiness.reason}</p>
             </div>
+            {activeDataset && (
+              <div className="font-mono tabular-nums text-[11px] text-zinc-700 dark:text-zinc-300 shrink-0">
+                Train {readiness.trainCount} · Val {readiness.valCount} · Test {readiness.testCount}
+              </div>
+            )}
+          </div>
+          {datasetValidation && datasetValidation.errors.length > 0 && (
+            <ul className="list-disc ps-5 text-[11px] text-red-700 dark:text-red-400 space-y-0.5">
+              {datasetValidation.errors.map((err, idx) => (
+                <li key={idx}>{err}</li>
+              ))}
+            </ul>
+          )}
+          {datasetValidation && datasetValidation.warnings.length > 0 && (
+            <ul className="list-disc ps-5 text-[11px] text-amber-700 dark:text-amber-400 space-y-0.5">
+              {datasetValidation.warnings.map((warn, idx) => (
+                <li key={idx}>{warn}</li>
+              ))}
+            </ul>
           )}
         </div>
 
@@ -984,18 +1056,69 @@ export function TrainingStudio({
           </div>
         )}
 
+        {sanityErr && (
+          <div className="p-3 rounded-lg border border-red-300 dark:border-red-900/60 bg-red-50/40 dark:bg-red-950/20 text-xs text-red-700 dark:text-red-400">
+            {sanityErr}
+          </div>
+        )}
+
+        {sanityResult && (
+          <div
+            className={`p-3.5 rounded-lg border text-xs space-y-1.5 ${
+              sanityResult.passed
+                ? 'border-emerald-300 dark:border-emerald-900/60 bg-emerald-50/40 dark:bg-emerald-950/15'
+                : 'border-amber-300 dark:border-amber-900/60 bg-amber-50/40 dark:bg-amber-950/15'
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                {t.trainingStudio.sanityTitle}
+              </span>
+              <span
+                className={`font-semibold ${
+                  sanityResult.passed
+                    ? 'text-emerald-700 dark:text-emerald-400'
+                    : 'text-amber-700 dark:text-amber-400'
+                }`}
+              >
+                {sanityResult.passed ? t.trainingStudio.sanityPassed : t.trainingStudio.sanityFailed}
+              </span>
+            </div>
+            <div className="font-mono text-[11px] text-zinc-600 dark:text-zinc-300 space-y-0.5" dir="ltr">
+              {sanityResult.details.map((line, i) => (
+                <div key={i}>{line}</div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Action Bar */}
         <div className="flex flex-wrap items-center gap-3 pt-1">
           {!isTraining ? (
-            <button
-              type="button"
-              disabled={!readiness.ready}
-              onClick={handleStartTraining}
-              className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50"
-            >
-              <Play className="w-4 h-4" />
-              <span>{t.trainingStudio.startTrainingBtn}</span>
-            </button>
+            <>
+              <button
+                type="button"
+                disabled={!readiness.ready}
+                onClick={handleStartTraining}
+                className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50"
+              >
+                <Play className="w-4 h-4" />
+                <span>{t.trainingStudio.startTrainingBtn}</span>
+              </button>
+              {selectedArch?.backendEngine === 'tfjs_browser' && (
+                <button
+                  type="button"
+                  disabled={sanityBusy || !activeDataset || items.length < 2}
+                  onClick={() => void handleRunSanityCheck()}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors disabled:opacity-50"
+                >
+                  <Activity className="w-3.5 h-3.5 text-red-600" />
+                  <span>
+                    {sanityBusy ? t.trainingStudio.runningSanityBtn : t.trainingStudio.sanityTestBtn}
+                  </span>
+                </button>
+              )}
+            </>
           ) : (
             <>
               <button
@@ -1188,7 +1311,7 @@ export function TrainingStudio({
                 </div>
 
                 {/* Metric Summary Strip */}
-                <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 tabular-nums text-xs">
+                <div className="grid grid-cols-2 sm:grid-cols-7 gap-3 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 tabular-nums text-xs">
                   <div>
                     <span className="text-zinc-500 block">
                       {inspectedModel.taskType === 'image_classification'
@@ -1202,6 +1325,20 @@ export function TrainingStudio({
                           : inspectedModel.mAP50) * 100
                       ).toFixed(1)}
                       %
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block">
+                      {inspectedModel.taskType === 'image_classification'
+                        ? t.trainingStudio.errorRateLabel
+                        : t.trainingStudio.map5095Label}
+                    </span>
+                    <span className="text-lg font-display font-bold">
+                      {inspectedModel.taskType === 'image_classification'
+                        ? `${(Math.max(0, 1 - inspectedModel.accuracy) * 100).toFixed(1)}%`
+                        : lastExtraMetrics?.mAP50_95 !== undefined
+                        ? `${(lastExtraMetrics.mAP50_95 * 100).toFixed(1)}%`
+                        : '—'}
                     </span>
                   </div>
                   <div>
@@ -1235,6 +1372,24 @@ export function TrainingStudio({
                     </span>
                   </div>
                 </div>
+
+                {(lastDiagnostics || lastExtraMetrics?.meanIoU !== undefined) && (
+                  <div className="flex flex-wrap items-center gap-4 text-[11px] font-mono text-zinc-500 dark:text-zinc-400 px-1" dir="ltr">
+                    {lastDiagnostics && (
+                      <>
+                        <span>Grad L1: {lastDiagnostics.initialGradientNorm}</span>
+                        <span>Epoch-1 ΔW: {lastDiagnostics.epoch1ParamDelta}</span>
+                        <span>Finite Loss: {lastDiagnostics.allLossesFinite ? 'OK' : 'ERR'}</span>
+                      </>
+                    )}
+                    {inspectedModel.taskType === 'object_detection' &&
+                      lastExtraMetrics?.meanIoU !== undefined && (
+                        <span>
+                          {t.trainingStudio.meanIoULabel}: {(lastExtraMetrics.meanIoU * 100).toFixed(1)}%
+                        </span>
+                      )}
+                  </div>
+                )}
 
                 {/* Confusion Matrix + Per-Class Table */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

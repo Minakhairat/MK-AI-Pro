@@ -577,7 +577,7 @@ export function EvaluationStudio({
 
         {/* Active Metrics Strip */}
         {(batchResult || selectedModel) && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 pt-2 border-t border-zinc-200 dark:border-zinc-800">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 pt-2 border-t border-zinc-200 dark:border-zinc-800">
             <div className="p-3 rounded-lg bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800">
               <p className="text-[11px] text-zinc-500">
                 {project.taskType === 'object_detection' ? ts.map50Label : ts.accuracyLabel}
@@ -593,6 +593,20 @@ export function EvaluationStudio({
                     : selectedModel!.accuracy) * 100
                 )}
                 %
+              </p>
+            </div>
+            <div className="p-3 rounded-lg bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800">
+              <p className="text-[11px] text-zinc-500">
+                {project.taskType === 'object_detection' ? ts.map5095Label : ts.errorRateLabel}
+              </p>
+              <p className="text-base font-mono font-semibold tabular-nums mt-0.5">
+                {project.taskType === 'object_detection'
+                  ? batchResult?.mAP50_95 !== undefined
+                    ? `${Math.round(batchResult.mAP50_95 * 100)}%`
+                    : '—'
+                  : `${Math.round(
+                      (batchResult?.errorRate ?? Math.max(0, 1 - selectedModel!.accuracy)) * 100
+                    )}%`}
               </p>
             </div>
             <div className="p-3 rounded-lg bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800">
@@ -620,9 +634,17 @@ export function EvaluationStudio({
               </p>
             </div>
             <div className="p-3 rounded-lg bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800">
-              <p className="text-[11px] text-zinc-500">{ev.p95LatencyLabel}</p>
+              <p className="text-[11px] text-zinc-500">
+                {project.taskType === 'object_detection' ? ts.meanIoULabel : ev.p95LatencyLabel}
+              </p>
               <p className="text-base font-mono font-semibold tabular-nums mt-0.5">
-                {batchResult ? `${batchResult.p95LatencyMs} ms` : '—'}
+                {project.taskType === 'object_detection'
+                  ? batchResult?.meanIoU !== undefined
+                    ? `${Math.round(batchResult.meanIoU * 100)}%`
+                    : '—'
+                  : batchResult
+                  ? `${batchResult.p95LatencyMs} ms`
+                  : '—'}
               </p>
             </div>
             <div className="p-3 rounded-lg bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800">

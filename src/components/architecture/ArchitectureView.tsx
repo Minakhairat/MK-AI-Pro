@@ -99,9 +99,19 @@ export function ArchitectureView() {
               <Server className="w-4 h-4 text-red-600 dark:text-red-500" />
               <span>{t.architectureView.backendHealthTitle}</span>
             </div>
-            <span className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+            <span
+              className={`text-xs font-medium ${
+                health?.status === 'ok'
+                  ? 'text-emerald-700 dark:text-emerald-400'
+                  : health?.staticHosting
+                  ? 'text-amber-700 dark:text-amber-400'
+                  : 'text-zinc-500 dark:text-zinc-400'
+              }`}
+            >
               {health?.status === 'ok'
                 ? t.architectureView.statusOk
+                : health?.staticHosting
+                ? t.architectureView.statusStaticHosting
                 : t.architectureView.statusOffline}
             </span>
           </div>

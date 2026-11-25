@@ -1,6 +1,9 @@
 import * as tf from '@tensorflow/tfjs';
-import { renderAugmentationPreview } from './datasetUtils.ts';
-import { getMediaBlob } from './localMediaStore.ts';
+import {
+  renderPreprocessedCanvas,
+  validateDatasetForTraining,
+} from './datasetUtils.ts';
+import { getMediaBlob, listStoredDatasetBlobIds } from './localMediaStore.ts';
 import { saveTfModelToIndexedDb } from './localModelStore.ts';
 import type {
   BatchEvalSampleResult,
@@ -14,6 +17,8 @@ import type {
   ModelArchitectureSpec,
   OptimizerType,
   PerClassMetric,
+  SanityTestResult,
+  TrainingDiagnostics,
   TrainingHyperparameters,
   V1TaskType,
 } from '../types/domain.ts';
@@ -115,14 +120,14 @@ export function getRecommendedHyperparameters(
 ): TrainingHyperparameters {
   const batchSize = sampleCount >= 24 ? 8 : sampleCount >= 8 ? 4 : 2;
   return {
-    epochs: taskType === 'image_classification' ? 12 : 16,
+    epochs: taskType === 'image_classification' ? 18 : 20,
     batchSize,
-    learningRate: taskType === 'image_classification' ? 0.0015 : 0.002,
+    learningRate: taskType === 'image_classification' ? 0.001 : 0.0018,
     optimizer: 'adam',
     inputSize: taskType === 'image_classification' ? 96 : 128,
     confidenceThreshold: 0.35,
     iouThreshold: 0.5,
-    earlyStoppingPatience: 5,
+    earlyStoppingPatience: 6,
     saveCheckpoints: true,
   };
 }
@@ -148,9 +153,29 @@ export function buildClassificationModel(
         kernelSize: 3,
         padding: 'same',
         activation: 'relu',
+        kernelInitializer: 'heNormal',
       })
     );
-    model.add(tf.layers.batchNormalization());
+    model.add(
+      tf.layers.conv2d({
+        filters: 24,
+        kernelSize: 3,
+        padding: 'same',
+        activation: 'relu',
+        kernelInitializer: 'heNormal',
+      })
+    );
+    model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
+
+    model.add(
+      tf.layers.conv2d({
+        filters: 32,
+        kernelSize: 3,
+        padding: 'same',
+        activation: 'relu',
+        kernelInitializer: 'heNormal',
+      })
+    );
     model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
 
     model.add(
@@ -159,27 +184,47 @@ export function buildClassificationModel(
         kernelSize: 3,
         padding: 'same',
         activation: 'relu',
+        kernelInitializer: 'heNormal',
       })
     );
-    model.add(tf.layers.batchNormalization());
     model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
 
+    if (inputSize >= 64) {
+      model.add(
+        tf.layers.conv2d({
+          filters: 48,
+          kernelSize: 3,
+          padding: 'same',
+          activation: 'relu',
+          kernelInitializer: 'heNormal',
+        })
+      );
+      model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
+    }
+    if (inputSize >= 120) {
+      model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
+    }
+
+    model.add(tf.layers.flatten());
+    model.add(tf.layers.dropout({ rate: 0.2 }));
     model.add(
-      tf.layers.conv2d({
-        filters: 64,
-        kernelSize: 3,
-        padding: 'same',
+      tf.layers.dense({
+        units: 48,
         activation: 'relu',
+        kernelInitializer: 'heNormal',
       })
     );
-    model.add(tf.layers.globalAveragePooling2d({}));
-    model.add(tf.layers.dropout({ rate: 0.25 }));
-    model.add(tf.layers.dense({ units: 48, activation: 'relu' }));
-    model.add(tf.layers.dense({ units: numClasses, activation: 'softmax' }));
+    model.add(
+      tf.layers.dense({
+        units: numClasses,
+        activation: 'softmax',
+        kernelInitializer: 'glorotNormal',
+      })
+    );
     return model;
   }
 
-  // Default: mk_mobilenet_sep (Depthwise-Separable CNN)
+  // Default: mk_mobilenet_sep (Spatial Depthwise-Separable CNN without tiny-batch BN drift)
   model.add(
     tf.layers.conv2d({
       inputShape: [inputSize, inputSize, 3],
@@ -188,9 +233,9 @@ export function buildClassificationModel(
       strides: 2,
       padding: 'same',
       activation: 'relu',
+      kernelInitializer: 'heNormal',
     })
   );
-  model.add(tf.layers.batchNormalization());
 
   model.add(
     tf.layers.separableConv2d({
@@ -198,21 +243,57 @@ export function buildClassificationModel(
       kernelSize: 3,
       padding: 'same',
       activation: 'relu',
+      depthwiseInitializer: 'heNormal',
+      pointwiseInitializer: 'heNormal',
     })
   );
   model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
 
   model.add(
     tf.layers.separableConv2d({
-      filters: 64,
+      filters: 48,
       kernelSize: 3,
       padding: 'same',
       activation: 'relu',
+      depthwiseInitializer: 'heNormal',
+      pointwiseInitializer: 'heNormal',
     })
   );
-  model.add(tf.layers.globalAveragePooling2d({}));
-  model.add(tf.layers.dropout({ rate: 0.2 }));
-  model.add(tf.layers.dense({ units: numClasses, activation: 'softmax' }));
+  model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
+
+  if (inputSize >= 64) {
+    model.add(
+      tf.layers.separableConv2d({
+        filters: 64,
+        kernelSize: 3,
+        padding: 'same',
+        activation: 'relu',
+        depthwiseInitializer: 'heNormal',
+        pointwiseInitializer: 'heNormal',
+      })
+    );
+    model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
+  }
+  if (inputSize >= 120) {
+    model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
+  }
+
+  model.add(tf.layers.flatten());
+  model.add(tf.layers.dropout({ rate: 0.15 }));
+  model.add(
+    tf.layers.dense({
+      units: 32,
+      activation: 'relu',
+      kernelInitializer: 'heNormal',
+    })
+  );
+  model.add(
+    tf.layers.dense({
+      units: numClasses,
+      activation: 'softmax',
+      kernelInitializer: 'glorotNormal',
+    })
+  );
   return model;
 }
 
@@ -231,6 +312,7 @@ export function buildGridYoloModel(
       kernelSize: 3,
       padding: 'same',
       activation: 'relu',
+      kernelInitializer: 'heNormal',
     })
   );
   model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
@@ -241,6 +323,7 @@ export function buildGridYoloModel(
       kernelSize: 3,
       padding: 'same',
       activation: 'relu',
+      kernelInitializer: 'heNormal',
     })
   );
   model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
@@ -251,6 +334,7 @@ export function buildGridYoloModel(
       kernelSize: 3,
       padding: 'same',
       activation: 'relu',
+      kernelInitializer: 'heNormal',
     })
   );
   model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
@@ -261,6 +345,7 @@ export function buildGridYoloModel(
       kernelSize: 3,
       padding: 'same',
       activation: 'relu',
+      kernelInitializer: 'heNormal',
     })
   );
   model.add(tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }));
@@ -270,10 +355,11 @@ export function buildGridYoloModel(
   }
 
   model.add(tf.layers.flatten());
-  model.add(tf.layers.dropout({ rate: 0.15 }));
+  model.add(tf.layers.dropout({ rate: 0.1 }));
   model.add(
     tf.layers.dense({
       units: gridSize * gridSize * (5 + numClasses),
+      kernelInitializer: 'glorotNormal',
     })
   );
   model.add(
@@ -316,6 +402,7 @@ export function computeClassificationMetrics(
   classes: string[]
 ): {
   accuracy: number;
+  errorRate: number;
   precision: number;
   recall: number;
   f1Score: number;
@@ -366,9 +453,11 @@ export function computeClassificationMetrics(
   const macroR = active.reduce((s, m) => s + m.recall, 0) / denom;
   const macroF1 = active.reduce((s, m) => s + m.f1Score, 0) / denom;
   const accuracy = yTrue.length > 0 ? correct / yTrue.length : 0;
+  const errorRate = Math.max(0, 1 - accuracy);
 
   return {
     accuracy: Number(accuracy.toFixed(4)),
+    errorRate: Number(errorRate.toFixed(4)),
     precision: Number(macroP.toFixed(4)),
     recall: Number(macroR.toFixed(4)),
     f1Score: Number(macroF1.toFixed(4)),
@@ -494,16 +583,17 @@ export function encodeGridTargets(
   return tf.tensor4d(buf, [n, gridSize, gridSize, depth]);
 }
 
-export function computeDetectionMetrics(
+function computeMapAtSingleIoU(
   groundTruthPerImage: BoundingBox[][],
   predictionsPerImage: DetectedBox[][],
   classes: string[],
-  iouThreshold: number = 0.5
+  iouThreshold: number
 ): {
   precision: number;
   recall: number;
   f1Score: number;
-  mAP50: number;
+  mAP: number;
+  meanIoU: number;
   confusionLabels: string[];
   confusionFlat: number[];
   perClassMetrics: PerClassMetric[];
@@ -518,6 +608,8 @@ export function computeDetectionMetrics(
   const fnByClass = new Array(k).fill(0);
   const supportByClass = new Array(k).fill(0);
   const predsScoresByClass: { conf: number; tp: boolean }[][] = classes.map(() => []);
+  let matchedIoUSum = 0;
+  let matchedIoUCount = 0;
 
   for (let imgIdx = 0; imgIdx < groundTruthPerImage.length; imgIdx++) {
     const gts = groundTruthPerImage[imgIdx] || [];
@@ -546,17 +638,19 @@ export function computeDetectionMetrics(
       if (bestGtIdx >= 0) {
         matchedGt.add(bestGtIdx);
         const gtClassIdx = classes.indexOf(gts[bestGtIdx].className);
-        if (gtClassIdx >= 0) {
+        if (gtClassIdx >= 0 && pred.classIndex >= 0 && pred.classIndex < k) {
           matrix[gtClassIdx * mSize + pred.classIndex] += 1;
         }
         if (pred.classIndex === gtClassIdx) {
           tpByClass[pred.classIndex] += 1;
+          matchedIoUSum += bestIoU;
+          matchedIoUCount += 1;
           predsScoresByClass[pred.classIndex].push({ conf: pred.confidence, tp: true });
-        } else {
+        } else if (pred.classIndex >= 0 && pred.classIndex < k) {
           fpByClass[pred.classIndex] += 1;
           predsScoresByClass[pred.classIndex].push({ conf: pred.confidence, tp: false });
         }
-      } else {
+      } else if (pred.classIndex >= 0 && pred.classIndex < k) {
         fpByClass[pred.classIndex] += 1;
         matrix[k * mSize + pred.classIndex] += 1;
         predsScoresByClass[pred.classIndex].push({ conf: pred.confidence, tp: false });
@@ -616,16 +710,66 @@ export function computeDetectionMetrics(
   const macroP = active.reduce((s, m) => s + m.precision, 0) / denom;
   const macroR = active.reduce((s, m) => s + m.recall, 0) / denom;
   const macroF1 = active.reduce((s, m) => s + m.f1Score, 0) / denom;
-  const mAP50 = activeClasses > 0 ? apSum / activeClasses : 0;
+  const mAP = activeClasses > 0 ? apSum / activeClasses : 0;
+  const meanIoU = matchedIoUCount > 0 ? matchedIoUSum / matchedIoUCount : 0;
 
   return {
     precision: Number(macroP.toFixed(4)),
     recall: Number(macroR.toFixed(4)),
     f1Score: Number(macroF1.toFixed(4)),
-    mAP50: Number(mAP50.toFixed(4)),
+    mAP: Number(mAP.toFixed(4)),
+    meanIoU: Number(meanIoU.toFixed(4)),
     confusionLabels: labelsWithBg,
     confusionFlat: matrix,
     perClassMetrics,
+  };
+}
+
+export function computeDetectionMetrics(
+  groundTruthPerImage: BoundingBox[][],
+  predictionsPerImage: DetectedBox[][],
+  classes: string[],
+  iouThreshold: number = 0.5
+): {
+  precision: number;
+  recall: number;
+  f1Score: number;
+  mAP50: number;
+  mAP50_95: number;
+  meanIoU: number;
+  confusionLabels: string[];
+  confusionFlat: number[];
+  perClassMetrics: PerClassMetric[];
+} {
+  const primary = computeMapAtSingleIoU(
+    groundTruthPerImage,
+    predictionsPerImage,
+    classes,
+    iouThreshold
+  );
+
+  const cocoThresholds = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95];
+  let sumMap = 0;
+  for (const thr of cocoThresholds) {
+    sumMap += computeMapAtSingleIoU(
+      groundTruthPerImage,
+      predictionsPerImage,
+      classes,
+      thr
+    ).mAP;
+  }
+  const mAP50_95 = Number((sumMap / cocoThresholds.length).toFixed(4));
+
+  return {
+    precision: primary.precision,
+    recall: primary.recall,
+    f1Score: primary.f1Score,
+    mAP50: primary.mAP,
+    mAP50_95,
+    meanIoU: primary.meanIoU,
+    confusionLabels: primary.confusionLabels,
+    confusionFlat: primary.confusionFlat,
+    perClassMetrics: primary.perClassMetrics,
   };
 }
 
@@ -645,6 +789,67 @@ async function waitWhilePaused(hooks: TrainingControlHooks): Promise<'continue' 
   return hooks.shouldCancel() ? 'cancel' : 'continue';
 }
 
+function measureWeightL1Delta(prevSnapshot: Float32Array[], model: tf.LayersModel): number {
+  const curr = model.getWeights();
+  let delta = 0;
+  for (let i = 0; i < curr.length; i++) {
+    const p = prevSnapshot[i];
+    const c = curr[i].dataSync() as Float32Array;
+    if (!p || p.length !== c.length) continue;
+    for (let j = 0; j < c.length; j++) {
+      delta += Math.abs(c[j] - p[j]);
+    }
+  }
+  return delta;
+}
+
+function captureWeightSnapshot(model: tf.LayersModel): Float32Array[] {
+  return model.getWeights().map((w) => new Float32Array(w.dataSync() as Float32Array));
+}
+
+function computeClassifierGradNorm(
+  model: tf.LayersModel,
+  xSample: tf.Tensor4D,
+  yOneHotSample: tf.Tensor2D
+): { lossValue: number; gradL1Norm: number } {
+  const trainableVars = model.trainableWeights.map((w) => w.read() as tf.Variable);
+  return tf.tidy(() => {
+    const { value, grads } = tf.variableGrads(() => {
+      const probs = model.apply(xSample, { training: true }) as tf.Tensor2D;
+      const clipped = tf.clipByValue(probs, 1e-7, 1 - 1e-7);
+      return tf.neg(tf.mean(tf.sum(tf.mul(yOneHotSample, tf.log(clipped)), 1))) as tf.Scalar;
+    }, trainableVars);
+    let gradNorm = 0;
+    for (const g of Object.values(grads)) {
+      gradNorm += Number(tf.sum(tf.abs(g)).dataSync()[0] ?? 0);
+    }
+    return {
+      lossValue: Number(value.dataSync()[0] ?? Number.NaN),
+      gradL1Norm: gradNorm,
+    };
+  });
+}
+
+function computeBalancedClassWeights(yOneHot: tf.Tensor2D, numClasses: number): { [k: number]: number } | undefined {
+  const indices = tf.tidy(() => Array.from(yOneHot.argMax(1).dataSync()));
+  if (indices.length === 0) return undefined;
+  const counts = new Array(numClasses).fill(0);
+  for (const idx of indices) {
+    if (idx >= 0 && idx < numClasses) counts[idx] += 1;
+  }
+  const positive = counts.filter((c) => c > 0);
+  if (positive.length < 2) return undefined;
+  const maxC = Math.max(...positive);
+  const minC = Math.min(...positive);
+  if (maxC / minC < 1.5) return undefined;
+  const weights: { [k: number]: number } = {};
+  for (let c = 0; c < numClasses; c++) {
+    const count = Math.max(1, counts[c]);
+    weights[c] = Number(Math.min(4, Math.max(0.5, indices.length / (numClasses * count))).toFixed(4));
+  }
+  return weights;
+}
+
 export async function trainClassifierCore(params: {
   model: tf.LayersModel;
   xTrain: tf.Tensor4D;
@@ -660,9 +865,17 @@ export async function trainClassifierCore(params: {
   epochMetrics: EpochMetricPoint[];
   bestEpoch: number;
   bestValMetric: number;
+  diagnostics: TrainingDiagnostics;
 }> {
   const { model, xTrain, yTrainOneHot, xVal, yValOneHot, yValIndices, classes, hyperparameters, hooks } =
     params;
+
+  if (model.trainableWeights.length === 0) {
+    throw new Error('Model has zero trainable parameters.');
+  }
+  if (xTrain.shape[0] < 1 || yTrainOneHot.shape[1] !== classes.length) {
+    throw new Error(`Tensor dimension mismatch: expected [N, ${classes.length}] targets.`);
+  }
 
   const optimizer = createOptimizer(hyperparameters.optimizer, hyperparameters.learningRate);
   model.compile({
@@ -671,31 +884,86 @@ export async function trainClassifierCore(params: {
     metrics: ['accuracy'],
   });
 
+  // Step-0 Gradient & Finite Loss Diagnostic Check
+  const probeCount = Math.min(4, xTrain.shape[0]);
+  const probeCheck = tf.tidy(() => {
+    const xProbe = xTrain.slice([0, 0, 0, 0], [probeCount, -1, -1, -1]) as tf.Tensor4D;
+    const yProbe = yTrainOneHot.slice([0, 0], [probeCount, -1]) as tf.Tensor2D;
+    return computeClassifierGradNorm(model, xProbe, yProbe);
+  });
+
+  if (!Number.isFinite(probeCheck.lossValue)) {
+    throw new Error('Diagnostic failure: Initial forward pass produced NaN/Infinity loss.');
+  }
+  if (!(probeCheck.gradL1Norm > 0)) {
+    throw new Error('Diagnostic failure: Initial backpropagation produced zero gradients across all trainable layers.');
+  }
+  hooks.onLog(
+    `[Diagnostic] Trainable params: ${model.countParams().toLocaleString()} · Initial loss: ${probeCheck.lossValue.toFixed(4)} · Grad L1: ${probeCheck.gradL1Norm.toFixed(4)}`
+  );
+
+  const classWeight = computeBalancedClassWeights(yTrainOneHot, classes.length);
+  if (classWeight) {
+    hooks.onLog(`[Diagnostic] Class imbalance balancing weights enabled.`);
+  }
+
   const epochMetrics: EpochMetricPoint[] = [];
   let bestEpoch = 0;
   let bestValMetric = -1;
+  let bestValLoss = Number.POSITIVE_INFINITY;
   let staleEpochs = 0;
   let bestWeights: tf.Tensor[] | null = null;
+  let epoch1ParamDelta = 0;
+  let allLossesFinite = true;
 
   for (let epoch = 1; epoch <= hyperparameters.epochs; epoch++) {
     const gate = await waitWhilePaused(hooks);
     if (gate === 'cancel') {
       bestWeights?.forEach((w) => w.dispose());
-      return { status: 'cancelled', epochMetrics, bestEpoch: Math.max(1, bestEpoch), bestValMetric: Math.max(0, bestValMetric) };
+      return {
+        status: 'cancelled',
+        epochMetrics,
+        bestEpoch: Math.max(1, bestEpoch),
+        bestValMetric: Math.max(0, bestValMetric),
+        diagnostics: {
+          trainableParamCount: model.countParams(),
+          initialGradientNorm: Number(probeCheck.gradL1Norm.toFixed(6)),
+          epoch1ParamDelta: Number(epoch1ParamDelta.toFixed(6)),
+          hasNonZeroGradients: probeCheck.gradL1Norm > 0,
+          allLossesFinite,
+          parametersUpdated: epoch1ParamDelta > 0,
+        },
+      };
     }
 
+    const beforeSnapshot = epoch === 1 ? captureWeightSnapshot(model) : null;
     const t0 = performance.now();
     const history = await model.fit(xTrain, yTrainOneHot, {
       epochs: 1,
       batchSize: Math.min(hyperparameters.batchSize, xTrain.shape[0]),
       shuffle: true,
       validationData: [xVal, yValOneHot],
+      classWeight,
       verbose: 0,
     });
 
-    const trainLoss = Number(history.history.loss?.[0] ?? 0);
+    if (beforeSnapshot) {
+      epoch1ParamDelta = measureWeightL1Delta(beforeSnapshot, model);
+      if (!(epoch1ParamDelta > 0)) {
+        throw new Error('Diagnostic failure: Model weights did not change after Epoch 1 optimizer step (frozen parameters).');
+      }
+      hooks.onLog(`[Diagnostic] Epoch 1 weight update ΔW L1 = ${epoch1ParamDelta.toFixed(4)}`);
+    }
+
+    const trainLoss = Number(history.history.loss?.[0] ?? Number.NaN);
     const valLoss = Number(history.history.val_loss?.[0] ?? trainLoss);
     const trainAcc = Number(history.history.acc?.[0] ?? history.history.accuracy?.[0] ?? 0);
+
+    if (!Number.isFinite(trainLoss) || !Number.isFinite(valLoss)) {
+      allLossesFinite = false;
+      bestWeights?.forEach((w) => w.dispose());
+      throw new Error(`Training diverged at epoch ${epoch}: non-finite loss (${trainLoss} / ${valLoss}).`);
+    }
 
     const valPredIndices = tf.tidy(() => {
       const probs = model.predict(xVal) as tf.Tensor2D;
@@ -715,8 +983,11 @@ export async function trainClassifierCore(params: {
     };
     epochMetrics.push(point);
 
-    if (valAcc >= bestValMetric) {
+    const improved =
+      valAcc > bestValMetric || (valAcc === bestValMetric && valLoss < bestValLoss);
+    if (improved) {
       bestValMetric = valAcc;
+      bestValLoss = valLoss;
       bestEpoch = epoch;
       staleEpochs = 0;
       bestWeights?.forEach((w) => w.dispose());
@@ -733,14 +1004,14 @@ export async function trainClassifierCore(params: {
         point.trainMetric * 100
       ).toFixed(1)}% · val_loss: ${point.valLoss.toFixed(4)} · val_acc: ${(
         point.valMetric * 100
-      ).toFixed(1)}% (${durationMs}ms)`
+      ).toFixed(1)}% · val_err: ${(valStats.errorRate * 100).toFixed(1)}% (${durationMs}ms)`
     );
     await hooks.onEpoch(point, bestEpoch, Math.max(0, bestValMetric));
 
     if (
       hyperparameters.earlyStoppingPatience > 0 &&
       staleEpochs >= hyperparameters.earlyStoppingPatience &&
-      epoch >= 5
+      epoch >= 8
     ) {
       hooks.onLog(`Early stopping triggered at epoch ${epoch} (best epoch ${bestEpoch}).`);
       break;
@@ -759,6 +1030,14 @@ export async function trainClassifierCore(params: {
     epochMetrics,
     bestEpoch: Math.max(1, bestEpoch),
     bestValMetric: Math.max(0, bestValMetric),
+    diagnostics: {
+      trainableParamCount: model.countParams(),
+      initialGradientNorm: Number(probeCheck.gradL1Norm.toFixed(6)),
+      epoch1ParamDelta: Number(epoch1ParamDelta.toFixed(6)),
+      hasNonZeroGradients: probeCheck.gradL1Norm > 0,
+      allLossesFinite,
+      parametersUpdated: epoch1ParamDelta > 0,
+    },
   };
 }
 
@@ -791,14 +1070,22 @@ function computeYoloBatchLoss(
       tf.mul(negMask, tf.neg(tf.log(tf.add(tf.sub(1, predObj), eps))))
     );
 
-    const clsLossRaw = tf.losses.softmaxCrossEntropy(trueCls, predClsLogits);
-    const batchCount = tf.maximum(1, tf.cast(preds.shape[0], 'float32'));
+    // Strictly mask classification cross-entropy to grid cells that actually contain objects
+    const logProbs = tf.logSoftmax(predClsLogits, -1);
+    const cellClsCrossEnt = tf.neg(tf.sum(tf.mul(trueCls, logProbs), -1, true));
+    const maskedClsLoss = tf.sum(tf.mul(objMask, cellClsCrossEnt));
+
     const posCount = tf.maximum(1, tf.sum(objMask));
+    const negCount = tf.maximum(1, tf.sum(negMask));
 
     const coordLoss = tf.div(tf.mul(5, tf.add(xyLoss, whLoss)), posCount);
-    const objLoss = tf.div(tf.add(posObjLoss, tf.mul(0.25, negObjLoss)), batchCount);
+    const objLoss = tf.add(
+      tf.div(posObjLoss, posCount),
+      tf.mul(0.5, tf.div(negObjLoss, negCount))
+    );
+    const clsLoss = tf.div(maskedClsLoss, posCount);
 
-    return tf.add(tf.add(coordLoss, objLoss), clsLossRaw) as tf.Scalar;
+    return tf.add(tf.add(coordLoss, objLoss), clsLoss) as tf.Scalar;
   });
 }
 
@@ -806,6 +1093,7 @@ export async function trainDetectorCore(params: {
   model: tf.LayersModel;
   xTrain: tf.Tensor4D;
   yTrainTargets: tf.Tensor4D;
+  trainGroundTruth?: BoundingBox[][];
   xVal: tf.Tensor4D;
   yValTargets: tf.Tensor4D;
   valGroundTruth: BoundingBox[][];
@@ -818,11 +1106,13 @@ export async function trainDetectorCore(params: {
   epochMetrics: EpochMetricPoint[];
   bestEpoch: number;
   bestValMetric: number;
+  diagnostics: TrainingDiagnostics;
 }> {
   const {
     model,
     xTrain,
     yTrainTargets,
+    trainGroundTruth,
     xVal,
     yValTargets,
     valGroundTruth,
@@ -832,23 +1122,74 @@ export async function trainDetectorCore(params: {
     hooks,
   } = params;
 
+  if (model.trainableWeights.length === 0) {
+    throw new Error('Detector model has zero trainable parameters.');
+  }
+
   const optimizer = createOptimizer(hyperparameters.optimizer, hyperparameters.learningRate);
   const trainableVars = model.trainableWeights.map((w) => w.read() as tf.Variable);
+
+  // Step-0 Gradient Diagnostic Check
+  const probeCount = Math.min(2, xTrain.shape[0]);
+  const probeCheck = tf.tidy(() => {
+    const xb = xTrain.slice([0, 0, 0, 0], [probeCount, -1, -1, -1]) as tf.Tensor4D;
+    const yb = yTrainTargets.slice([0, 0, 0, 0], [probeCount, -1, -1, -1]) as tf.Tensor4D;
+    const { value, grads } = tf.variableGrads(() => {
+      const pred = model.apply(xb, { training: true }) as tf.Tensor4D;
+      return computeYoloBatchLoss(pred, yb, classes.length);
+    }, trainableVars);
+    let gradNorm = 0;
+    for (const g of Object.values(grads)) {
+      gradNorm += Number(tf.sum(tf.abs(g)).dataSync()[0] ?? 0);
+    }
+    return {
+      lossValue: Number(value.dataSync()[0] ?? Number.NaN),
+      gradL1Norm: gradNorm,
+    };
+  });
+
+  if (!Number.isFinite(probeCheck.lossValue)) {
+    throw new Error('Diagnostic failure: Detector forward pass produced NaN/Infinity loss.');
+  }
+  if (!(probeCheck.gradL1Norm > 0)) {
+    throw new Error('Diagnostic failure: Detector backpropagation produced zero gradients.');
+  }
+  hooks.onLog(
+    `[Diagnostic] Detector params: ${model.countParams().toLocaleString()} · Initial loss: ${probeCheck.lossValue.toFixed(4)} · Grad L1: ${probeCheck.gradL1Norm.toFixed(4)}`
+  );
+
   const nTrain = xTrain.shape[0];
   const batchSize = Math.min(hyperparameters.batchSize, nTrain);
   const epochMetrics: EpochMetricPoint[] = [];
   let bestEpoch = 0;
   let bestValMetric = -1;
+  let bestValLoss = Number.POSITIVE_INFINITY;
   let staleEpochs = 0;
   let bestWeights: tf.Tensor[] | null = null;
+  let epoch1ParamDelta = 0;
+  let allLossesFinite = true;
 
   for (let epoch = 1; epoch <= hyperparameters.epochs; epoch++) {
     const gate = await waitWhilePaused(hooks);
     if (gate === 'cancel') {
       bestWeights?.forEach((w) => w.dispose());
-      return { status: 'cancelled', epochMetrics, bestEpoch: Math.max(1, bestEpoch), bestValMetric: Math.max(0, bestValMetric) };
+      return {
+        status: 'cancelled',
+        epochMetrics,
+        bestEpoch: Math.max(1, bestEpoch),
+        bestValMetric: Math.max(0, bestValMetric),
+        diagnostics: {
+          trainableParamCount: model.countParams(),
+          initialGradientNorm: Number(probeCheck.gradL1Norm.toFixed(6)),
+          epoch1ParamDelta: Number(epoch1ParamDelta.toFixed(6)),
+          hasNonZeroGradients: probeCheck.gradL1Norm > 0,
+          allLossesFinite,
+          parametersUpdated: epoch1ParamDelta > 0,
+        },
+      };
     }
 
+    const beforeSnapshot = epoch === 1 ? captureWeightSnapshot(model) : null;
     const t0 = performance.now();
     const indices = Array.from({ length: nTrain }, (_, idx) => idx);
     for (let i = indices.length - 1; i > 0; i--) {
@@ -863,7 +1204,20 @@ export async function trainDetectorCore(params: {
       const innerGate = await waitWhilePaused(hooks);
       if (innerGate === 'cancel') {
         bestWeights?.forEach((w) => w.dispose());
-        return { status: 'cancelled', epochMetrics, bestEpoch: Math.max(1, bestEpoch), bestValMetric: Math.max(0, bestValMetric) };
+        return {
+          status: 'cancelled',
+          epochMetrics,
+          bestEpoch: Math.max(1, bestEpoch),
+          bestValMetric: Math.max(0, bestValMetric),
+          diagnostics: {
+            trainableParamCount: model.countParams(),
+            initialGradientNorm: Number(probeCheck.gradL1Norm.toFixed(6)),
+            epoch1ParamDelta: Number(epoch1ParamDelta.toFixed(6)),
+            hasNonZeroGradients: probeCheck.gradL1Norm > 0,
+            allLossesFinite,
+            parametersUpdated: epoch1ParamDelta > 0,
+          },
+        };
       }
 
       const sliceIdx = indices.slice(start, start + batchSize);
@@ -877,16 +1231,60 @@ export async function trainDetectorCore(params: {
           return computeYoloBatchLoss(pred, yb, classes.length);
         }, trainableVars);
 
-        optimizer.applyGradients(grads);
+        optimizer.applyGradients(
+          Object.entries(grads).map(([name, tensor]) => ({ name, tensor }))
+        );
         return value.dataSync()[0];
       });
+
+      if (!Number.isFinite(lossVal)) {
+        allLossesFinite = false;
+        bestWeights?.forEach((w) => w.dispose());
+        throw new Error(`Detector training diverged at epoch ${epoch}: non-finite batch loss (${lossVal}).`);
+      }
 
       epochLossSum += lossVal;
       batchSteps += 1;
       await tf.nextFrame();
     }
 
+    if (beforeSnapshot) {
+      epoch1ParamDelta = measureWeightL1Delta(beforeSnapshot, model);
+      if (!(epoch1ParamDelta > 0)) {
+        throw new Error('Diagnostic failure: Detector weights did not change after Epoch 1 optimizer step.');
+      }
+      hooks.onLog(`[Diagnostic] Epoch 1 weight update ΔW L1 = ${epoch1ParamDelta.toFixed(4)}`);
+    }
+
     const avgTrainLoss = epochLossSum / Math.max(1, batchSteps);
+    const perCellStride = gridSize * gridSize * (5 + classes.length);
+
+    let trainF1 = 0;
+    if (trainGroundTruth && trainGroundTruth.length === nTrain) {
+      const trainEvalData = tf.tidy(() => {
+        const predTrain = model.predict(xTrain) as tf.Tensor4D;
+        return new Float32Array(predTrain.dataSync() as Float32Array);
+      });
+      const trainPredBoxes: DetectedBox[][] = [];
+      for (let i = 0; i < nTrain; i++) {
+        const slice = trainEvalData.subarray(i * perCellStride, (i + 1) * perCellStride);
+        trainPredBoxes.push(
+          decodeGridDetections(
+            slice,
+            classes,
+            gridSize,
+            hyperparameters.confidenceThreshold,
+            hyperparameters.iouThreshold
+          )
+        );
+      }
+      trainF1 = computeDetectionMetrics(
+        trainGroundTruth,
+        trainPredBoxes,
+        classes,
+        hyperparameters.iouThreshold
+      ).f1Score;
+    }
 
     const valEval = tf.tidy(() => {
       const predVal = model.predict(xVal) as tf.Tensor4D;
@@ -895,7 +1293,12 @@ export async function trainDetectorCore(params: {
       return { valLoss, predData: new Float32Array(predData) };
     });
 
-    const perCellStride = gridSize * gridSize * (5 + classes.length);
+    if (!Number.isFinite(valEval.valLoss)) {
+      allLossesFinite = false;
+      bestWeights?.forEach((w) => w.dispose());
+      throw new Error(`Detector validation produced non-finite loss at epoch ${epoch}.`);
+    }
+
     const valPredBoxes: DetectedBox[][] = [];
     for (let i = 0; i < xVal.shape[0]; i++) {
       const slice = valEval.predData.subarray(i * perCellStride, (i + 1) * perCellStride);
@@ -922,14 +1325,18 @@ export async function trainDetectorCore(params: {
       epoch,
       trainLoss: Number(avgTrainLoss.toFixed(5)),
       valLoss: Number(valEval.valLoss.toFixed(5)),
-      trainMetric: Number(detStats.f1Score.toFixed(4)),
+      trainMetric: Number((trainGroundTruth ? trainF1 : detStats.f1Score).toFixed(4)),
       valMetric: Number(detStats.mAP50.toFixed(4)),
       durationMs,
     };
     epochMetrics.push(point);
 
-    if (detStats.mAP50 >= bestValMetric) {
+    const improved =
+      detStats.mAP50 > bestValMetric ||
+      (detStats.mAP50 === bestValMetric && valEval.valLoss < bestValLoss);
+    if (improved) {
       bestValMetric = detStats.mAP50;
+      bestValLoss = valEval.valLoss;
       bestEpoch = epoch;
       staleEpochs = 0;
       bestWeights?.forEach((w) => w.dispose());
@@ -942,16 +1349,16 @@ export async function trainDetectorCore(params: {
     }
 
     hooks.onLog(
-      `Epoch ${epoch}/${hyperparameters.epochs} — loss: ${point.trainLoss.toFixed(4)} · mAP@50: ${(
+      `Epoch ${epoch}/${hyperparameters.epochs} — loss: ${point.trainLoss.toFixed(4)} · val_loss: ${point.valLoss.toFixed(4)} · mAP@50: ${(
         detStats.mAP50 * 100
-      ).toFixed(1)}% · F1: ${(detStats.f1Score * 100).toFixed(1)}% (${durationMs}ms)`
+      ).toFixed(1)}% · meanIoU: ${(detStats.meanIoU * 100).toFixed(1)}% (${durationMs}ms)`
     );
     await hooks.onEpoch(point, bestEpoch, Math.max(0, bestValMetric));
 
     if (
       hyperparameters.earlyStoppingPatience > 0 &&
       staleEpochs >= hyperparameters.earlyStoppingPatience &&
-      epoch >= 5
+      epoch >= 8
     ) {
       hooks.onLog(`Early stopping triggered at epoch ${epoch} (best epoch ${bestEpoch}).`);
       break;
@@ -968,7 +1375,291 @@ export async function trainDetectorCore(params: {
     epochMetrics,
     bestEpoch: Math.max(1, bestEpoch),
     bestValMetric: Math.max(0, bestValMetric),
+    diagnostics: {
+      trainableParamCount: model.countParams(),
+      initialGradientNorm: Number(probeCheck.gradL1Norm.toFixed(6)),
+      epoch1ParamDelta: Number(epoch1ParamDelta.toFixed(6)),
+      hasNonZeroGradients: probeCheck.gradL1Norm > 0,
+      allLossesFinite,
+      parametersUpdated: epoch1ParamDelta > 0,
+    },
   };
+}
+
+/**
+ * Overfitting Sanity Test on a small tensor subset (zero augmentation).
+ * Verifies genuine forward pass, non-zero gradients, parameter updates, and loss drop.
+ */
+export async function runOverfittingSanityTest(params: {
+  taskType: V1TaskType;
+  architecture: string;
+  classes: string[];
+  xSubset: tf.Tensor4D;
+  ySubsetOneHot?: tf.Tensor2D;
+  ySubsetIndices?: number[];
+  boxesSubset?: BoundingBox[][];
+  inputSize: number;
+  steps?: number;
+  learningRate?: number;
+}): Promise<SanityTestResult> {
+  await tf.ready();
+  const details: string[] = [];
+  const sampleCount = params.xSubset.shape[0];
+  const steps = Math.max(10, params.steps ?? 25);
+
+  if (sampleCount < 2) {
+    throw new Error('Sanity test requires at least 2 samples.');
+  }
+
+  if (params.taskType === 'image_classification') {
+    if (!params.ySubsetOneHot || !params.ySubsetIndices) {
+      throw new Error('Classification sanity test requires ySubsetOneHot and ySubsetIndices.');
+    }
+    const model = buildClassificationModel(
+      params.architecture,
+      params.inputSize,
+      params.classes.length
+    );
+    const optimizer = tf.train.adam(params.learningRate ?? 0.002);
+    model.compile({
+      optimizer,
+      loss: 'categoricalCrossentropy',
+      metrics: ['accuracy'],
+    });
+
+    const beforeWeights = captureWeightSnapshot(model);
+    const initProbe = computeClassifierGradNorm(model, params.xSubset, params.ySubsetOneHot);
+
+    try {
+      const history = await model.fit(params.xSubset, params.ySubsetOneHot, {
+        epochs: steps,
+        batchSize: sampleCount,
+        shuffle: false,
+        verbose: 0,
+      });
+
+      const losses = (history.history.loss || []).map((v) => Number(v));
+      const initialLoss = Number.isFinite(initProbe.lossValue)
+        ? initProbe.lossValue
+        : losses[0] ?? 0;
+      const finalLoss = losses[losses.length - 1] ?? initialLoss;
+      const paramDelta = measureWeightL1Delta(beforeWeights, model);
+
+      const preds = tf.tidy(() => {
+        const out = model.predict(params.xSubset) as tf.Tensor2D;
+        return Array.from(out.argMax(1).dataSync());
+      });
+      const stats = computeClassificationMetrics(params.ySubsetIndices, preds, params.classes);
+      const lossReductionPct =
+        initialLoss > 0 ? ((initialLoss - finalLoss) / initialLoss) * 100 : 0;
+
+      const passed =
+        Number.isFinite(initialLoss) &&
+        Number.isFinite(finalLoss) &&
+        initProbe.gradL1Norm > 0 &&
+        paramDelta > 0 &&
+        finalLoss < initialLoss &&
+        stats.accuracy >= 0.75;
+
+      details.push(`Initial loss: ${initialLoss.toFixed(4)} -> Final loss: ${finalLoss.toFixed(4)} (-${lossReductionPct.toFixed(1)}%)`);
+      details.push(`Gradient L1 norm: ${initProbe.gradL1Norm.toFixed(4)} · Weight ΔW L1: ${paramDelta.toFixed(4)}`);
+      details.push(`Overfit subset accuracy: ${(stats.accuracy * 100).toFixed(1)}% (Error rate: ${(stats.errorRate * 100).toFixed(1)}%)`);
+
+      return {
+        passed,
+        taskType: params.taskType,
+        architecture: params.architecture,
+        sampleCount,
+        stepsExecuted: steps,
+        initialLoss: Number(initialLoss.toFixed(5)),
+        finalLoss: Number(finalLoss.toFixed(5)),
+        lossReductionPct: Number(lossReductionPct.toFixed(1)),
+        paramDelta: Number(paramDelta.toFixed(5)),
+        hasNonZeroGradients: initProbe.gradL1Norm > 0,
+        subsetAccuracy: stats.accuracy,
+        details,
+      };
+    } finally {
+      model.dispose();
+    }
+  }
+
+  // Object detection sanity test
+  if (!params.boxesSubset) {
+    throw new Error('Detection sanity test requires boxesSubset.');
+  }
+  const model = buildGridYoloModel(params.inputSize, params.classes.length, DETECTION_GRID_SIZE);
+  const optimizer = tf.train.adam(params.learningRate ?? 0.003);
+  const trainableVars = model.trainableWeights.map((w) => w.read() as tf.Variable);
+  const yTargets = encodeGridTargets(params.boxesSubset, params.classes, DETECTION_GRID_SIZE);
+
+  try {
+    const beforeWeights = captureWeightSnapshot(model);
+    let initialLoss = 0;
+    let finalLoss = 0;
+    let gradNorm = 0;
+
+    for (let step = 0; step < steps; step++) {
+      const stepRes = tf.tidy(() => {
+        const { value, grads } = tf.variableGrads(() => {
+          const pred = model.apply(params.xSubset, { training: true }) as tf.Tensor4D;
+          return computeYoloBatchLoss(pred, yTargets, params.classes.length);
+        }, trainableVars);
+        let gSum = 0;
+        if (step === 0) {
+          for (const g of Object.values(grads)) {
+            gSum += Number(tf.sum(tf.abs(g)).dataSync()[0] ?? 0);
+          }
+        }
+        optimizer.applyGradients(
+          Object.entries(grads).map(([name, tensor]) => ({ name, tensor }))
+        );
+        return { loss: Number(value.dataSync()[0]), gSum };
+      });
+      if (step === 0) {
+        initialLoss = stepRes.loss;
+        gradNorm = stepRes.gSum;
+      }
+      finalLoss = stepRes.loss;
+    }
+
+    const paramDelta = measureWeightL1Delta(beforeWeights, model);
+    const predData = tf.tidy(() => {
+      const out = model.predict(params.xSubset) as tf.Tensor4D;
+      return new Float32Array(out.dataSync() as Float32Array);
+    });
+    const stride = DETECTION_GRID_SIZE * DETECTION_GRID_SIZE * (5 + params.classes.length);
+    const predBoxes: DetectedBox[][] = [];
+    for (let i = 0; i < sampleCount; i++) {
+      predBoxes.push(
+        decodeGridDetections(
+          predData.subarray(i * stride, (i + 1) * stride),
+          params.classes,
+          DETECTION_GRID_SIZE,
+          0.25,
+          0.5
+        )
+      );
+    }
+    const detStats = computeDetectionMetrics(params.boxesSubset, predBoxes, params.classes, 0.5);
+    const lossReductionPct = initialLoss > 0 ? ((initialLoss - finalLoss) / initialLoss) * 100 : 0;
+    const passed =
+      Number.isFinite(initialLoss) &&
+      Number.isFinite(finalLoss) &&
+      gradNorm > 0 &&
+      paramDelta > 0 &&
+      finalLoss < initialLoss * 0.85;
+
+    details.push(`Initial loss: ${initialLoss.toFixed(4)} -> Final loss: ${finalLoss.toFixed(4)} (-${lossReductionPct.toFixed(1)}%)`);
+    details.push(`Gradient L1 norm: ${gradNorm.toFixed(4)} · Weight ΔW L1: ${paramDelta.toFixed(4)}`);
+    details.push(`Subset mAP@50: ${(detStats.mAP50 * 100).toFixed(1)}% · Mean IoU: ${(detStats.meanIoU * 100).toFixed(1)}%`);
+
+    return {
+      passed,
+      taskType: params.taskType,
+      architecture: params.architecture,
+      sampleCount,
+      stepsExecuted: steps,
+      initialLoss: Number(initialLoss.toFixed(5)),
+      finalLoss: Number(finalLoss.toFixed(5)),
+      lossReductionPct: Number(lossReductionPct.toFixed(1)),
+      paramDelta: Number(paramDelta.toFixed(5)),
+      hasNonZeroGradients: gradNorm > 0,
+      subsetAccuracy: detStats.mAP50,
+      details,
+    };
+  } finally {
+    yTargets.dispose();
+    model.dispose();
+  }
+}
+
+export async function runDatasetOverfittingSanityTest(params: {
+  taskType: V1TaskType;
+  architecture: string;
+  dataset: Dataset;
+  items: DatasetItem[];
+  inputSize: number;
+}): Promise<SanityTestResult> {
+  const { dataset, items, taskType, architecture, inputSize } = params;
+  const classes = dataset.classes;
+  if (classes.length === 0) {
+    throw new Error('Dataset has no defined classes.');
+  }
+
+  const annotated = items.filter((it) =>
+    taskType === 'image_classification'
+      ? Boolean(it.classificationLabel && classes.includes(it.classificationLabel))
+      : Array.isArray(it.annotations) && it.annotations.length > 0
+  );
+
+  // Pick up to 6 samples spanning multiple classes if available
+  const picked: DatasetItem[] = [];
+  if (taskType === 'image_classification') {
+    for (const cls of classes) {
+      const matches = annotated.filter((it) => it.classificationLabel === cls).slice(0, 2);
+      picked.push(...matches);
+      if (picked.length >= 6) break;
+    }
+  }
+  for (const it of annotated) {
+    if (picked.length >= 6) break;
+    if (!picked.some((p) => p.id === it.id)) picked.push(it);
+  }
+
+  if (picked.length < 2) {
+    throw new Error('Need at least 2 annotated samples with local images for overfitting sanity check.');
+  }
+
+  const tensors: tf.Tensor3D[] = [];
+  const validPicked: DatasetItem[] = [];
+  for (const item of picked) {
+    const blob = await getMediaBlob(item.id);
+    if (!blob) continue;
+    tensors.push(await blobToNormalizedTensor(blob, inputSize, null));
+    validPicked.push(item);
+  }
+
+  if (validPicked.length < 2) {
+    tensors.forEach((t) => t.dispose());
+    throw new Error('Local image blobs for selected sanity samples are missing from IndexedDB.');
+  }
+
+  const xSubset = tf.stack(tensors) as tf.Tensor4D;
+  tensors.forEach((t) => t.dispose());
+
+  try {
+    if (taskType === 'image_classification') {
+      const indices = validPicked.map((it) => classes.indexOf(it.classificationLabel));
+      const yOH = tf.oneHot(tf.tensor1d(indices, 'int32'), classes.length) as tf.Tensor2D;
+      try {
+        return await runOverfittingSanityTest({
+          taskType,
+          architecture,
+          classes,
+          xSubset,
+          ySubsetOneHot: yOH,
+          ySubsetIndices: indices,
+          inputSize,
+          steps: 25,
+        });
+      } finally {
+        yOH.dispose();
+      }
+    }
+
+    return await runOverfittingSanityTest({
+      taskType,
+      architecture,
+      classes,
+      xSubset,
+      boxesSubset: validPicked.map((it) => it.annotations),
+      inputSize,
+      steps: 28,
+    });
+  } finally {
+    xSubset.dispose();
+  }
 }
 
 async function blobToNormalizedTensor(
@@ -986,21 +1677,10 @@ async function blobToNormalizedTensor(
     });
 
     const canvas = document.createElement('canvas');
-    canvas.width = inputSize;
-    canvas.height = inputSize;
-
-    if (augmentConfig) {
-      renderAugmentationPreview(canvas, img, {
-        ...augmentConfig,
-        resizeWidth: inputSize,
-        resizeHeight: inputSize,
-      });
-    } else {
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(img, 0, 0, inputSize, inputSize);
-      }
-    }
+    // Unified letterbox preprocessing for Train, Val, Test, and Inference
+    renderPreprocessedCanvas(canvas, img, inputSize, augmentConfig ?? null, {
+      stochastic: Boolean(augmentConfig),
+    });
 
     return tf.tidy(() => {
       const raw = tf.browser.fromPixels(canvas);
@@ -1021,14 +1701,18 @@ export interface BrowserTrainingResult {
   weightSizeBytes: number;
   inferenceLatencyMs: number;
   accuracy: number;
+  errorRate: number;
   precision: number;
   recall: number;
   f1Score: number;
   mAP50: number;
+  mAP50_95: number;
+  meanIoU: number;
   confusionLabels: string[];
   confusionFlat: number[];
   perClassMetrics: PerClassMetric[];
   hardwareSummary: string;
+  diagnostics?: TrainingDiagnostics;
 }
 
 export async function runBrowserTrainingPipeline(params: {
@@ -1052,33 +1736,57 @@ export async function runBrowserTrainingPipeline(params: {
     throw new Error('Dataset has no defined classes.');
   }
 
+  const availableBlobIds = await listStoredDatasetBlobIds(params.dataset.id);
+  const validation = validateDatasetForTraining({
+    dataset: params.dataset,
+    items: params.items,
+    taskType: params.taskType,
+    availableBlobIds,
+  });
+
+  for (const warn of validation.warnings) {
+    params.hooks.onLog(`[Dataset Warning] ${warn}`);
+  }
+  if (!validation.valid) {
+    throw new Error(validation.errors.join(' '));
+  }
+
   const isAnnotated = (item: DatasetItem) =>
-    params.taskType === 'image_classification'
+    availableBlobIds.has(item.id) &&
+    (params.taskType === 'image_classification'
       ? item.classificationLabel.trim().length > 0 && classes.includes(item.classificationLabel)
-      : item.annotations.some((b) => classes.includes(b.className));
+      : item.annotations.some((b) => classes.includes(b.className)));
 
   const trainItems = params.items.filter((it) => it.split === 'train' && isAnnotated(it));
   const valItemsRaw = params.items.filter((it) => it.split === 'val' && isAnnotated(it));
   const testItemsRaw = params.items.filter((it) => it.split === 'test' && isAnnotated(it));
 
   if (trainItems.length < 2) {
-    throw new Error('At least 2 annotated images in the Train split are required to start real training.');
+    throw new Error('At least 2 annotated images with local blobs in Train split are required.');
   }
 
-  const valItems = valItemsRaw.length > 0 ? valItemsRaw : trainItems.slice(0, Math.max(1, Math.floor(trainItems.length / 3)));
+  const valItems =
+    valItemsRaw.length > 0
+      ? valItemsRaw
+      : trainItems.slice(0, Math.max(1, Math.floor(trainItems.length / 3)));
   const evaluatedSplit: 'test' | 'val' = testItemsRaw.length > 0 ? 'test' : 'val';
   const testItems = testItemsRaw.length > 0 ? testItemsRaw : valItems;
 
   params.hooks.onLog(
-    `Loaded splits — Train: ${trainItems.length} (augmented), Val: ${valItems.length} (clean), Test: ${testItems.length} (clean)`
+    `Loaded splits — Train: ${trainItems.length} (letterboxed + aug), Val: ${valItems.length} (clean letterbox), Test: ${testItems.length} (clean letterbox)`
   );
 
   const loadSplitTensors = async (splitItems: DatasetItem[], applyTrainAug: boolean) => {
     const tensors: tf.Tensor3D[] = [];
     const validItems: DatasetItem[] = [];
+    const missingItems: string[] = [];
+
     for (const item of splitItems) {
       const blob = await getMediaBlob(item.id);
-      if (!blob) continue;
+      if (!blob) {
+        missingItems.push(item.filename);
+        continue;
+      }
       const augForTask =
         applyTrainAug
           ? params.taskType === 'object_detection'
@@ -1090,7 +1798,6 @@ export async function runBrowserTrainingPipeline(params: {
               }
             : params.dataset.augmentationConfig
           : null;
-      // Apply augmentation strictly to Train split only (Anti-Leakage rule)
       const tensor = await blobToNormalizedTensor(
         blob,
         params.hyperparameters.inputSize,
@@ -1099,8 +1806,14 @@ export async function runBrowserTrainingPipeline(params: {
       tensors.push(tensor);
       validItems.push(item);
     }
+
+    if (missingItems.length > 0) {
+      params.hooks.onLog(
+        `[Dataset Warning] ${missingItems.length} image blob(s) could not be read: ${missingItems.slice(0, 5).join(', ')}`
+      );
+    }
     if (tensors.length === 0) {
-      throw new Error('No local image blobs found in IndexedDB for this dataset split.');
+      throw new Error('No readable image blobs found in IndexedDB for this dataset split.');
     }
     const stacked = tf.stack(tensors) as tf.Tensor4D;
     tensors.forEach((t) => t.dispose());
@@ -1124,6 +1837,10 @@ export async function runBrowserTrainingPipeline(params: {
       const yTrainIdx = trainLoaded.validItems.map((it) => classes.indexOf(it.classificationLabel));
       const yValIdx = valLoaded.validItems.map((it) => classes.indexOf(it.classificationLabel));
       const yTestIdx = testLoaded.validItems.map((it) => classes.indexOf(it.classificationLabel));
+
+      if (yTrainIdx.some((i) => i < 0) || yValIdx.some((i) => i < 0) || yTestIdx.some((i) => i < 0)) {
+        throw new Error('Class-index mapping mismatch: unknown label encountered outside dataset.classes.');
+      }
 
       const yTrainOH = tf.oneHot(tf.tensor1d(yTrainIdx, 'int32'), classes.length) as tf.Tensor2D;
       const yValOH = tf.oneHot(tf.tensor1d(yValIdx, 'int32'), classes.length) as tf.Tensor2D;
@@ -1167,14 +1884,18 @@ export async function runBrowserTrainingPipeline(params: {
             weightSizeBytes: 0,
             inferenceLatencyMs: 0,
             accuracy: 0,
+            errorRate: 1,
             precision: 0,
             recall: 0,
             f1Score: 0,
             mAP50: 0,
+            mAP50_95: 0,
+            meanIoU: 0,
             confusionLabels: [],
             confusionFlat: [],
             perClassMetrics: [],
             hardwareSummary,
+            diagnostics: trainResult.diagnostics,
           };
         }
 
@@ -1208,21 +1929,24 @@ export async function runBrowserTrainingPipeline(params: {
           weightSizeBytes: saved.sizeBytes,
           inferenceLatencyMs,
           accuracy: evalMetrics.accuracy,
+          errorRate: evalMetrics.errorRate,
           precision: evalMetrics.precision,
           recall: evalMetrics.recall,
           f1Score: evalMetrics.f1Score,
           mAP50: 0,
+          mAP50_95: 0,
+          meanIoU: 0,
           confusionLabels: evalMetrics.confusionLabels,
           confusionFlat: evalMetrics.confusionFlat,
           perClassMetrics: evalMetrics.perClassMetrics,
           hardwareSummary,
+          diagnostics: trainResult.diagnostics,
         };
       } finally {
         yTrainOH.dispose();
         yValOH.dispose();
       }
     } else {
-      // Object Detection: mk_yolo_grid
       model = buildGridYoloModel(params.hyperparameters.inputSize, classes.length, DETECTION_GRID_SIZE);
       const yTrainTargets = encodeGridTargets(
         trainLoaded.validItems.map((it) => it.annotations),
@@ -1240,6 +1964,7 @@ export async function runBrowserTrainingPipeline(params: {
           model,
           xTrain: trainLoaded.stacked,
           yTrainTargets,
+          trainGroundTruth: trainLoaded.validItems.map((it) => it.annotations),
           xVal: valLoaded.stacked,
           yValTargets,
           valGroundTruth: valLoaded.validItems.map((it) => it.annotations),
@@ -1275,14 +2000,18 @@ export async function runBrowserTrainingPipeline(params: {
             weightSizeBytes: 0,
             inferenceLatencyMs: 0,
             accuracy: 0,
+            errorRate: 1,
             precision: 0,
             recall: 0,
             f1Score: 0,
             mAP50: 0,
+            mAP50_95: 0,
+            meanIoU: 0,
             confusionLabels: [],
             confusionFlat: [],
             perClassMetrics: [],
             hardwareSummary,
+            diagnostics: trainResult.diagnostics,
           };
         }
 
@@ -1338,14 +2067,18 @@ export async function runBrowserTrainingPipeline(params: {
           weightSizeBytes: saved.sizeBytes,
           inferenceLatencyMs,
           accuracy: detMetrics.mAP50,
+          errorRate: Number(Math.max(0, 1 - detMetrics.mAP50).toFixed(4)),
           precision: detMetrics.precision,
           recall: detMetrics.recall,
           f1Score: detMetrics.f1Score,
           mAP50: detMetrics.mAP50,
+          mAP50_95: detMetrics.mAP50_95,
+          meanIoU: detMetrics.meanIoU,
           confusionLabels: detMetrics.confusionLabels,
           confusionFlat: detMetrics.confusionFlat,
           perClassMetrics: detMetrics.perClassMetrics,
           hardwareSummary,
+          diagnostics: trainResult.diagnostics,
         };
       } finally {
         yTrainTargets.dispose();
@@ -1579,10 +2312,13 @@ export async function evaluateLocalModelOnItems(params: {
       confidenceThreshold: params.confidenceThreshold,
       iouThreshold: params.iouThreshold,
       accuracy: clsMetrics.accuracy,
+      errorRate: clsMetrics.errorRate,
       precision: clsMetrics.precision,
       recall: clsMetrics.recall,
       f1Score: clsMetrics.f1Score,
       mAP50: 0,
+      mAP50_95: 0,
+      meanIoU: 0,
       avgLatencyMs,
       p95LatencyMs,
       confusionLabels: clsMetrics.confusionLabels,
@@ -1606,10 +2342,13 @@ export async function evaluateLocalModelOnItems(params: {
     confidenceThreshold: params.confidenceThreshold,
     iouThreshold: params.iouThreshold,
     accuracy: detMetrics.mAP50,
+    errorRate: Number(Math.max(0, 1 - detMetrics.mAP50).toFixed(4)),
     precision: detMetrics.precision,
     recall: detMetrics.recall,
     f1Score: detMetrics.f1Score,
     mAP50: detMetrics.mAP50,
+    mAP50_95: detMetrics.mAP50_95,
+    meanIoU: detMetrics.meanIoU,
     avgLatencyMs,
     p95LatencyMs,
     confusionLabels: detMetrics.confusionLabels,

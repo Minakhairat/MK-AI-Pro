@@ -97,11 +97,13 @@ test('EvaluationReport enforces [0..1] metrics, referential integrity, and immut
   assert.match(rulesContent, /trainedModels\/\$\(incoming\(\)\.modelId\)/);
 });
 
-test('GeneratedApp enforces PWA bounds, on-device compatibility guard, and referential integrity', () => {
+test('GeneratedApp enforces PWA bounds, customIconDataUrl allowlist, on-device compatibility guard, and referential integrity', () => {
   assert.match(rulesContent, /match\s+\/generatedApps\/\{appId\}/);
   assert.match(rulesContent, /function\s+isValidGeneratedApp\(data,\s*appId\)/);
   assert.match(rulesContent, /data\.shortName\.size\(\)\s*<=\s*12/);
   assert.match(rulesContent, /data\.inputSources\.hasOnly\(\['camera',\s*'upload',\s*'video'\]\)/);
+  assert.match(rulesContent, /data\.customIconDataUrl\s+is\s+string/);
+  assert.match(rulesContent, /data\.customIconDataUrl\.size\(\)\s*<=\s*150000/);
   assert.match(rulesContent, /onDeviceCompatible\s*==\s*true/);
 });
 

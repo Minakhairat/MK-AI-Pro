@@ -2,7 +2,10 @@ node_modules/
 build/
 dist/
 coverage/
+.mk_ai_storage/
 .DS_Store
 *.log
 .env*
 !.env.example
+!.env.development.example
+!.env.production.example

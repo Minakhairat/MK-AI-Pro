@@ -79,6 +79,22 @@ export async function deleteMediaBlob(itemId: string): Promise<void> {
   });
 }
 
+export async function listStoredDatasetBlobIds(datasetId: string): Promise<Set<string>> {
+  if (typeof indexedDB === 'undefined') return new Set();
+  const db = await openMediaDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const store = tx.objectStore(STORE_NAME);
+    const index = store.index('datasetId');
+    const req = index.getAllKeys(IDBKeyRange.only(datasetId));
+    req.onsuccess = () => {
+      const keys = Array.isArray(req.result) ? req.result.map((k) => String(k)) : [];
+      resolve(new Set(keys));
+    };
+    req.onerror = () => reject(req.error || new Error('Failed to list dataset media blobs.'));
+  });
+}
+
 export async function deleteDatasetMediaBlobs(datasetId: string): Promise<void> {
   const db = await openMediaDb();
   return new Promise((resolve, reject) => {

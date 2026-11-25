@@ -2,12 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   assignSplitForIndex,
+  assignStratifiedSplits,
   auditDatasetQuality,
   DEFAULT_AUGMENTATION_CONFIG,
   exportToCocoJson,
   exportToYoloBundle,
   parseCocoJson,
   parseYoloLabels,
+  pickIncrementalSplit,
+  validateDatasetForTraining,
 } from '../src/lib/datasetUtils.ts';
 import type { Dataset, DatasetItem } from '../src/types/domain.ts';
 
@@ -148,4 +151,77 @@ test('assignSplitForIndex allocates train/val/test according to percentages', ()
   assert.equal(splits.filter((s) => s === 'train').length, 7);
   assert.equal(splits.filter((s) => s === 'val').length, 2);
   assert.equal(splits.filter((s) => s === 'test').length, 1);
+});
+
+test('assignStratifiedSplits & pickIncrementalSplit ensure every class reaches train split proportionally', () => {
+  const items: DatasetItem[] = [];
+  for (let i = 0; i < 10; i++) {
+    items.push(
+      makeItem({
+        id: `p_${i}`,
+        classificationLabel: 'pass',
+        sha256: `p_${i}`.padEnd(64, '0'),
+      })
+    );
+    items.push(
+      makeItem({
+        id: `d_${i}`,
+        classificationLabel: 'defect',
+        sha256: `d_${i}`.padEnd(64, '0'),
+      })
+    );
+  }
+  const map = assignStratifiedSplits(items, 70, 20, 'image_classification');
+  const passTrain = items
+    .filter((i) => i.classificationLabel === 'pass' && map.get(i.id) === 'train')
+    .length;
+  const defectTrain = items
+    .filter((i) => i.classificationLabel === 'defect' && map.get(i.id) === 'train')
+    .length;
+  assert.equal(passTrain, 7);
+  assert.equal(defectTrain, 7);
+
+  // Incremental split for first item of a brand-new class must always be train
+  assert.equal(pickIncrementalSplit(items, 'scratch', 70, 20, 'image_classification'), 'train');
+});
+
+test('validateDatasetForTraining flags missing labels, unknown classes, invalid boxes, missing blobs, and <2 classes', () => {
+  const ds = makeDataset();
+  const validItems: DatasetItem[] = [
+    makeItem({ id: 't1', split: 'train', classificationLabel: 'pass', sha256: '1'.repeat(64) }),
+    makeItem({ id: 't2', split: 'train', classificationLabel: 'defect', sha256: '2'.repeat(64) }),
+    makeItem({ id: 'v1', split: 'val', classificationLabel: 'pass', sha256: '3'.repeat(64) }),
+    makeItem({ id: 'unlabeled', split: 'train', classificationLabel: '', sha256: '4'.repeat(64) }),
+  ];
+
+  const available = new Set(['t1', 't2', 'v1']);
+  const okRes = validateDatasetForTraining({
+    dataset: ds,
+    items: validItems,
+    taskType: 'image_classification',
+    availableBlobIds: available,
+  });
+  assert.equal(okRes.valid, true);
+  assert.equal(okRes.stats.missingBlobCount, 1);
+
+  const badClsRes = validateDatasetForTraining({
+    dataset: { ...ds, classes: ['only_one'] },
+    items: [makeItem({ id: 't1', classificationLabel: 'unknown_cls' })],
+    taskType: 'image_classification',
+  });
+  assert.equal(badClsRes.valid, false);
+  assert.ok(badClsRes.errors.length >= 2);
+
+  const badDetRes = validateDatasetForTraining({
+    dataset: ds,
+    items: [
+      makeItem({
+        id: 'det1',
+        annotations: [{ id: 'b1', className: 'pass', x: 0.9, y: 0.9, width: 0.5, height: 0.5 }],
+      }),
+    ],
+    taskType: 'object_detection',
+  });
+  assert.equal(badDetRes.valid, false);
+  assert.equal(badDetRes.stats.invalidBoxCount, 1);
 });

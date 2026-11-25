@@ -326,6 +326,289 @@ export function assignSplitForIndex(
   return 'test';
 }
 
+function getItemGroupKey(item: DatasetItem, taskType: V1TaskType): string {
+  if (taskType === 'image_classification') {
+    return item.classificationLabel.trim() || '__unlabeled__';
+  }
+  return item.annotations[0]?.className?.trim() || '__unlabeled__';
+}
+
+/**
+ * Computes stratified per-class train/val/test assignments so every class
+ * has proportional representation across splits (prioritizing train when small).
+ */
+export function assignStratifiedSplits(
+  items: DatasetItem[],
+  trainPct: number,
+  valPct: number,
+  taskType: V1TaskType
+): Map<string, DatasetSplit> {
+  const result = new Map<string, DatasetSplit>();
+  const groups = new Map<string, DatasetItem[]>();
+
+  for (const item of items) {
+    const key = getItemGroupKey(item, taskType);
+    const list = groups.get(key) || [];
+    list.push(item);
+    groups.set(key, list);
+  }
+
+  for (const groupItems of groups.values()) {
+    const total = groupItems.length;
+    if (total === 1) {
+      result.set(groupItems[0].id, 'train');
+      continue;
+    }
+    if (total === 2) {
+      result.set(groupItems[0].id, 'train');
+      result.set(groupItems[1].id, valPct > 0 ? 'val' : 'train');
+      continue;
+    }
+
+    const trainTarget = Math.max(1, Math.round((total * trainPct) / 100));
+    const remaining = total - trainTarget;
+    const valShare =
+      valPct > 0 && remaining > 0
+        ? Math.max(
+            1,
+            Math.round((remaining * valPct) / Math.max(1, 100 - trainPct))
+          )
+        : 0;
+    const cappedVal = Math.min(remaining, valShare);
+
+    groupItems.forEach((item, idx) => {
+      if (idx < trainTarget) {
+        result.set(item.id, 'train');
+      } else if (idx < trainTarget + cappedVal) {
+        result.set(item.id, 'val');
+      } else {
+        result.set(item.id, 'test');
+      }
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Picks train/val/test split incrementally for a single captured/added sample
+ * within its class group, avoiding dumping sequential captures all into val/test.
+ */
+export function pickIncrementalSplit(
+  existingItems: DatasetItem[],
+  targetLabel: string,
+  trainPct: number,
+  valPct: number,
+  taskType: V1TaskType
+): DatasetSplit {
+  const normalizedLabel = targetLabel.trim() || '__unlabeled__';
+  const sameClass = existingItems.filter(
+    (it) => getItemGroupKey(it, taskType) === normalizedLabel
+  );
+  const counts: Record<DatasetSplit, number> = { train: 0, val: 0, test: 0 };
+  for (const it of sameClass) {
+    counts[it.split] += 1;
+  }
+
+  const nextTotal = sameClass.length + 1;
+  if (sameClass.length === 0 || counts.train === 0) return 'train';
+
+  const testPct = Math.max(0, 100 - trainPct - valPct);
+  const trainDeficit = (nextTotal * trainPct) / 100 - counts.train;
+  const valDeficit = valPct > 0 ? (nextTotal * valPct) / 100 - counts.val : -999;
+  const testDeficit = testPct > 0 ? (nextTotal * testPct) / 100 - counts.test : -999;
+
+  if (trainDeficit >= valDeficit && trainDeficit >= testDeficit) return 'train';
+  if (valDeficit >= testDeficit && valPct > 0) return 'val';
+  if (testPct > 0) return 'test';
+  return 'train';
+}
+
+export interface DatasetTrainingValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  stats: {
+    totalItems: number;
+    annotatedItems: number;
+    missingLabelsCount: number;
+    unknownClassCount: number;
+    invalidBoxCount: number;
+    missingBlobCount: number;
+    duplicateHashGroups: number;
+    splitCounts: Record<DatasetSplit, number>;
+    trainClassCounts: Record<string, number>;
+    valClassCounts: Record<string, number>;
+  };
+}
+
+/**
+ * Validates dataset completeness, labels, YOLO bounding boxes, class mappings,
+ * duplicates, and split coverage before executing real ML training.
+ */
+export function validateDatasetForTraining(params: {
+  dataset: Dataset;
+  items: DatasetItem[];
+  taskType: V1TaskType;
+  availableBlobIds?: Set<string>;
+}): DatasetTrainingValidationResult {
+  const { dataset, items, taskType, availableBlobIds } = params;
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (dataset.classes.length === 0) {
+    errors.push('Dataset has no defined classes.');
+  }
+  if (taskType === 'image_classification' && dataset.classes.length < 2) {
+    errors.push('Image classification requires at least 2 distinct classes.');
+  }
+  if (items.length === 0) {
+    errors.push('Dataset contains zero images.');
+  }
+
+  let missingLabelsCount = 0;
+  let unknownClassCount = 0;
+  let invalidBoxCount = 0;
+  let missingBlobCount = 0;
+  let annotatedItems = 0;
+
+  const splitCounts: Record<DatasetSplit, number> = { train: 0, val: 0, test: 0 };
+  const trainClassCounts: Record<string, number> = {};
+  const valClassCounts: Record<string, number> = {};
+  for (const cls of dataset.classes) {
+    trainClassCounts[cls] = 0;
+    valClassCounts[cls] = 0;
+  }
+
+  const hashCount = new Map<string, number>();
+
+  for (const item of items) {
+    hashCount.set(item.sha256, (hashCount.get(item.sha256) || 0) + 1);
+    if (availableBlobIds && !availableBlobIds.has(item.id)) {
+      missingBlobCount += 1;
+      continue;
+    }
+
+    if (taskType === 'image_classification') {
+      const label = item.classificationLabel.trim();
+      if (!label) {
+        missingLabelsCount += 1;
+        continue;
+      }
+      if (!dataset.classes.includes(label)) {
+        unknownClassCount += 1;
+        continue;
+      }
+      annotatedItems += 1;
+      splitCounts[item.split] += 1;
+      if (item.split === 'train') {
+        trainClassCounts[label] = (trainClassCounts[label] || 0) + 1;
+      } else if (item.split === 'val') {
+        valClassCounts[label] = (valClassCounts[label] || 0) + 1;
+      }
+    } else {
+      if (!Array.isArray(item.annotations) || item.annotations.length === 0) {
+        missingLabelsCount += 1;
+        continue;
+      }
+      let itemHasValidBox = false;
+      for (const box of item.annotations) {
+        if (!dataset.classes.includes(box.className)) {
+          unknownClassCount += 1;
+          continue;
+        }
+        const validGeom =
+          Number.isFinite(box.x) &&
+          Number.isFinite(box.y) &&
+          Number.isFinite(box.width) &&
+          Number.isFinite(box.height) &&
+          box.x >= 0 &&
+          box.y >= 0 &&
+          box.width > 0.002 &&
+          box.height > 0.002 &&
+          box.x + box.width <= 1.001 &&
+          box.y + box.height <= 1.001;
+        if (!validGeom) {
+          invalidBoxCount += 1;
+        } else {
+          itemHasValidBox = true;
+          if (item.split === 'train') {
+            trainClassCounts[box.className] = (trainClassCounts[box.className] || 0) + 1;
+          } else if (item.split === 'val') {
+            valClassCounts[box.className] = (valClassCounts[box.className] || 0) + 1;
+          }
+        }
+      }
+      if (itemHasValidBox) {
+        annotatedItems += 1;
+        splitCounts[item.split] += 1;
+      }
+    }
+  }
+
+  let duplicateHashGroups = 0;
+  for (const cnt of hashCount.values()) {
+    if (cnt > 1) duplicateHashGroups += 1;
+  }
+
+  if (missingBlobCount > 0) {
+    warnings.push(`${missingBlobCount} dataset image(s) are missing local browser blobs and cannot be loaded for training.`);
+  }
+  if (missingLabelsCount > 0) {
+    warnings.push(`${missingLabelsCount} image(s) have no class label or bounding box and will be excluded.`);
+  }
+  if (unknownClassCount > 0) {
+    errors.push(`${unknownClassCount} annotation(s) reference class names not present in dataset.classes.`);
+  }
+  if (invalidBoxCount > 0) {
+    errors.push(`${invalidBoxCount} bounding box annotation(s) have out-of-range or zero-area coordinates.`);
+  }
+  if (duplicateHashGroups > 0) {
+    warnings.push(`${duplicateHashGroups} duplicate image group(s) detected via SHA-256 hash; verify no train/val leakage.`);
+  }
+
+  if (splitCounts.train < 2) {
+    errors.push(`Train split needs at least 2 valid annotated images (found ${splitCounts.train}).`);
+  }
+
+  const classesMissingFromTrain = dataset.classes.filter((c) => (trainClassCounts[c] || 0) === 0);
+  if (classesMissingFromTrain.length > 0 && dataset.classes.length > 0) {
+    errors.push(
+      `Classes missing from Train split: ${classesMissingFromTrain.join(', ')}. Use Stratified Auto-Split before training.`
+    );
+  }
+
+  if (splitCounts.val === 0 && splitCounts.train >= 2) {
+    warnings.push('Validation split has 0 annotated images; a clean subset of Train will be held out for epoch checkpoints.');
+  }
+
+  const nonZeroTrain = Object.values(trainClassCounts).filter((c) => c > 0);
+  if (nonZeroTrain.length >= 2) {
+    const ratio = Math.max(...nonZeroTrain) / Math.min(...nonZeroTrain);
+    if (ratio >= 3) {
+      warnings.push(`Train split class imbalance is ${ratio.toFixed(1)}x; class weights will be applied.`);
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    stats: {
+      totalItems: items.length,
+      annotatedItems,
+      missingLabelsCount,
+      unknownClassCount,
+      invalidBoxCount,
+      missingBlobCount,
+      duplicateHashGroups,
+      splitCounts,
+      trainClassCounts,
+      valClassCounts,
+    },
+  };
+}
+
 export function auditDatasetQuality(
   dataset: Dataset,
   items: DatasetItem[],
@@ -517,39 +800,77 @@ export function exportToCocoJson(dataset: Dataset, items: DatasetItem[]) {
   };
 }
 
-export function renderAugmentationPreview(
+/**
+ * Deterministic letterbox canvas preprocessing shared across training,
+ * validation, test evaluation, and inference so aspect ratio & padding match 1:1.
+ */
+export function renderPreprocessedCanvas(
   canvas: HTMLCanvasElement,
-  img: HTMLImageElement,
-  cfg: AugmentationConfig
+  sourceEl: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement,
+  inputSize: number,
+  augConfig?: AugmentationConfig | null,
+  options?: { stochastic?: boolean }
 ): void {
-  const w = canvas.width;
-  const h = canvas.height;
+  canvas.width = inputSize;
+  canvas.height = inputSize;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
+  const srcWidth =
+    sourceEl instanceof HTMLImageElement
+      ? sourceEl.naturalWidth || sourceEl.width || inputSize
+      : sourceEl instanceof HTMLVideoElement
+      ? sourceEl.videoWidth || inputSize
+      : sourceEl.width || inputSize;
+  const srcHeight =
+    sourceEl instanceof HTMLImageElement
+      ? sourceEl.naturalHeight || sourceEl.height || inputSize
+      : sourceEl instanceof HTMLVideoElement
+      ? sourceEl.videoHeight || inputSize
+      : sourceEl.height || inputSize;
+
   ctx.save();
-  ctx.clearRect(0, 0, w, h);
+  ctx.clearRect(0, 0, inputSize, inputSize);
   ctx.fillStyle = '#09090b';
-  ctx.fillRect(0, 0, w, h);
+  ctx.fillRect(0, 0, inputSize, inputSize);
 
-  const brightness = 100 + cfg.brightnessDelta;
-  const contrast = 100 + cfg.contrastDelta;
-  ctx.filter = `brightness(${brightness}%) contrast(${contrast}%) blur(${cfg.blurRadius}px)`;
+  const stochastic = Boolean(options?.stochastic);
+  let rotateDeg = augConfig?.rotateDeg ?? 0;
+  let flipH = augConfig?.flipHorizontal ?? false;
+  let flipV = augConfig?.flipVertical ?? false;
+  let brightnessDelta = augConfig?.brightnessDelta ?? 0;
+  let contrastDelta = augConfig?.contrastDelta ?? 0;
+  const blurRadius = augConfig?.blurRadius ?? 0;
+  const noiseLevel = augConfig?.noiseLevel ?? 0;
 
-  ctx.translate(w / 2, h / 2);
-  ctx.rotate((cfg.rotateDeg * Math.PI) / 180);
-  ctx.scale(cfg.flipHorizontal ? -1 : 1, cfg.flipVertical ? -1 : 1);
+  if (augConfig && stochastic) {
+    if (rotateDeg !== 0) rotateDeg = (Math.random() * 2 - 1) * Math.abs(rotateDeg);
+    if (flipH) flipH = Math.random() >= 0.5;
+    if (flipV) flipV = Math.random() >= 0.5;
+    if (brightnessDelta !== 0) brightnessDelta = (Math.random() * 2 - 1) * Math.abs(brightnessDelta);
+    if (contrastDelta !== 0) contrastDelta = (Math.random() * 2 - 1) * Math.abs(contrastDelta);
+  }
 
-  const scale = Math.min(w / img.naturalWidth, h / img.naturalHeight);
-  const dw = img.naturalWidth * scale;
-  const dh = img.naturalHeight * scale;
-  ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+  if (augConfig) {
+    const brightness = Math.max(20, 100 + brightnessDelta);
+    const contrast = Math.max(20, 100 + contrastDelta);
+    ctx.filter = `brightness(${brightness}%) contrast(${contrast}%) blur(${Math.max(0, blurRadius)}px)`;
+  }
+
+  ctx.translate(inputSize / 2, inputSize / 2);
+  if (rotateDeg !== 0) ctx.rotate((rotateDeg * Math.PI) / 180);
+  ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+
+  const scale = Math.min(inputSize / Math.max(1, srcWidth), inputSize / Math.max(1, srcHeight));
+  const dw = srcWidth * scale;
+  const dh = srcHeight * scale;
+  ctx.drawImage(sourceEl, -dw / 2, -dh / 2, dw, dh);
   ctx.restore();
 
-  if (cfg.noiseLevel > 0) {
-    const imgData = ctx.getImageData(0, 0, w, h);
+  if (augConfig && noiseLevel > 0) {
+    const imgData = ctx.getImageData(0, 0, inputSize, inputSize);
     const data = imgData.data;
-    const amp = cfg.noiseLevel * 2.2;
+    const amp = noiseLevel * 2.2;
     for (let i = 0; i < data.length; i += 4) {
       const delta = (Math.random() - 0.5) * amp;
       data[i] = Math.max(0, Math.min(255, data[i] + delta));
@@ -559,3 +880,13 @@ export function renderAugmentationPreview(
     ctx.putImageData(imgData, 0, 0);
   }
 }
+
+export function renderAugmentationPreview(
+  canvas: HTMLCanvasElement,
+  img: HTMLImageElement,
+  cfg: AugmentationConfig
+): void {
+  const targetSize = Math.max(8, canvas.width || cfg.resizeWidth || 256);
+  renderPreprocessedCanvas(canvas, img, targetSize, cfg, { stochastic: false });
+}
+

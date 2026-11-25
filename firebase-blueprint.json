@@ -986,6 +986,10 @@
         "alertMinConfidence": {
           "type": "number"
         },
+        "customIconDataUrl": {
+          "type": "string",
+          "maxLength": 150000
+        },
         "status": {
           "type": "string",
           "enum": ["draft", "ready", "published"]
@@ -1027,6 +1031,7 @@
         "alertEnabled",
         "alertTargetClass",
         "alertMinConfidence",
+        "customIconDataUrl",
         "status",
         "version",
         "createdAt",

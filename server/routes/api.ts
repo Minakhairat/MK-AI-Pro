@@ -1,7 +1,11 @@
 import { Router } from 'express';
 import { requireAuth, type AuthenticatedRequest } from '../middleware/auth.ts';
 import { rateLimit } from '../middleware/rateLimit.ts';
-import { getComputeDescriptor, getStorageAdapter } from '../providers/cloudAdapter.ts';
+import {
+  getComputeDescriptor,
+  getStorageAdapter,
+  validateStorageConfig,
+} from '../providers/cloudAdapter.ts';
 
 export const apiRouter = Router();
 
@@ -35,6 +39,19 @@ apiRouter.get('/health', (_req, res) => {
       storage,
       compute,
     },
+  });
+});
+
+apiRouter.get('/storage/status', requireAuth, (_req: AuthenticatedRequest, res) => {
+  const validation = validateStorageConfig();
+  const descriptor = getStorageAdapter().describe();
+  res.json({
+    provider: descriptor.provider,
+    region: descriptor.region,
+    configured: descriptor.configured,
+    supportsPrivateLocalFirst: descriptor.supportsPrivateLocalFirst,
+    description: descriptor.description,
+    validation,
   });
 });
 

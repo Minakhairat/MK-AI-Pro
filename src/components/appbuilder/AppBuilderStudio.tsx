@@ -27,6 +27,7 @@ import {
   buildPwaReadme,
   buildServiceWorkerJs,
   buildStandaloneHtmlApp,
+  isValidCustomIconDataUrl,
 } from '../../lib/appPackager';
 import {
   getStoredModelRecord,
@@ -88,6 +89,56 @@ function escapeCsvCell(value: string | number | boolean): string {
   return s;
 }
 
+function triggerDataUrlDownload(filename: string, dataUrl: string) {
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = filename;
+  a.click();
+}
+
+async function resizeIconFileToDataUrl(file: File): Promise<string> {
+  const objUrl = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Could not decode selected icon image.'));
+      el.src = objUrl;
+    });
+    const size = 192;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Canvas 2D context unavailable.');
+    }
+    const iw = img.naturalWidth || img.width || size;
+    const ih = img.naturalHeight || img.height || size;
+    const scale = Math.min(size / iw, size / ih);
+    const dw = Math.round(iw * scale);
+    const dh = Math.round(ih * scale);
+    const dx = Math.round((size - dw) / 2);
+    const dy = Math.round((size - dh) / 2);
+    ctx.clearRect(0, 0, size, size);
+    ctx.drawImage(img, dx, dy, dw, dh);
+
+    let dataUrl = canvas.toDataURL('image/png');
+    if (dataUrl.length > 145000) {
+      dataUrl = canvas.toDataURL('image/webp', 0.85);
+    }
+    if (dataUrl.length > 145000) {
+      dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+    }
+    if (!isValidCustomIconDataUrl(dataUrl)) {
+      throw new Error('Processed icon exceeds size limits (150 KB max). Choose a simpler image.');
+    }
+    return dataUrl;
+  } finally {
+    URL.revokeObjectURL(objUrl);
+  }
+}
+
 function slugifyName(name: string): string {
   return (
     name
@@ -135,6 +186,7 @@ export function AppBuilderStudio({
   const [alertEnabled, setAlertEnabled] = useState<boolean>(false);
   const [alertTargetClass, setAlertTargetClass] = useState<string>('');
   const [alertMinConfidence, setAlertMinConfidence] = useState<number>(0.75);
+  const [customIconDataUrl, setCustomIconDataUrl] = useState<string>('');
 
   // Firestore mutation state
   const [saving, setSaving] = useState(false);
@@ -165,6 +217,7 @@ export function AppBuilderStudio({
   const busyInferRef = useRef(false);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
+  const iconInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedModel = useMemo(
     () => trainedModels.find((m) => m.id === selectedModelId) || defaultModel || null,
@@ -232,6 +285,7 @@ export function AppBuilderStudio({
     setAlertEnabled(app.alertEnabled);
     setAlertTargetClass(app.alertTargetClass);
     setAlertMinConfidence(app.alertMinConfidence);
+    setCustomIconDataUrl(app.customIconDataUrl || '');
     setConfirmDelete(false);
     setStatusNotice(null);
     setErrorNotice(null);
@@ -260,6 +314,7 @@ export function AppBuilderStudio({
     setAllowCsvExport(false);
     setAlertEnabled(false);
     setAlertMinConfidence(0.75);
+    setCustomIconDataUrl('');
     setConfirmDelete(false);
     setStatusNotice(null);
     setErrorNotice(null);
@@ -614,6 +669,7 @@ export function AppBuilderStudio({
           alertEnabled,
           alertTargetClass,
           alertMinConfidence,
+          customIconDataUrl,
           status: 'ready',
           nextVersion: activeSavedApp.version + 1,
         });
@@ -642,6 +698,7 @@ export function AppBuilderStudio({
           alertEnabled,
           alertTargetClass,
           alertMinConfidence,
+          customIconDataUrl,
           currentAppCount: generatedApps.length,
           projectStatus: project.status,
         });
@@ -652,6 +709,19 @@ export function AppBuilderStudio({
       setErrorNotice(err instanceof Error ? err.message : 'Failed to save app.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleUploadCustomIcon = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setErrorNotice(null);
+    try {
+      const dataUrl = await resizeIconFileToDataUrl(file);
+      setCustomIconDataUrl(dataUrl);
+    } catch (err) {
+      setErrorNotice(err instanceof Error ? err.message : 'Failed to load custom app icon.');
     }
   };
 
@@ -710,6 +780,7 @@ export function AppBuilderStudio({
       alertEnabled,
       alertTargetClass,
       alertMinConfidence,
+      customIconDataUrl: isValidCustomIconDataUrl(customIconDataUrl) ? customIconDataUrl : '',
       status: activeSavedApp?.status || 'ready',
       version: activeSavedApp?.version || 1,
       createdAt: activeSavedApp?.createdAt || null,
@@ -740,6 +811,7 @@ export function AppBuilderStudio({
     alertEnabled,
     alertTargetClass,
     alertMinConfidence,
+    customIconDataUrl,
   ]);
 
   const handleDownloadStandaloneHtml = async () => {
@@ -823,12 +895,20 @@ export function AppBuilderStudio({
         }`}
       >
         <div className="flex items-center gap-3 min-w-0">
-          <div
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-display font-bold text-xs shrink-0"
-            style={{ backgroundColor: draftAppSpec.themeColor }}
-          >
-            {draftAppSpec.shortName.slice(0, 2).toUpperCase() || 'MK'}
-          </div>
+          {isValidCustomIconDataUrl(draftAppSpec.customIconDataUrl) ? (
+            <img
+              src={draftAppSpec.customIconDataUrl}
+              alt={draftAppSpec.shortName}
+              className="w-8 h-8 rounded-lg object-cover shrink-0 border border-white/10"
+            />
+          ) : (
+            <div
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-display font-bold text-xs shrink-0"
+              style={{ backgroundColor: draftAppSpec.themeColor }}
+            >
+              {draftAppSpec.shortName.slice(0, 2).toUpperCase() || 'MK'}
+            </div>
+          )}
           <div className="min-w-0">
             <div className="text-sm font-display font-semibold truncate">
               {draftAppSpec.customHeaderTitle || draftAppSpec.name}
@@ -1404,6 +1484,58 @@ export function AppBuilderStudio({
               </span>
             </div>
           </div>
+
+          {/* Custom App Icon Upload */}
+          <div className="space-y-2 pt-2 border-t border-zinc-100 dark:border-zinc-800">
+            <label className="block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+              {t.appBuilder.customIconLabel}
+            </label>
+            <div className="flex items-center gap-3">
+              {isValidCustomIconDataUrl(customIconDataUrl) ? (
+                <img
+                  src={customIconDataUrl}
+                  alt="App icon preview"
+                  className="w-11 h-11 rounded-lg object-cover border border-zinc-300 dark:border-zinc-700 shrink-0"
+                />
+              ) : (
+                <div
+                  className="w-11 h-11 rounded-lg flex items-center justify-center text-white font-display font-bold text-sm shrink-0"
+                  style={{ backgroundColor: draftAppSpec.themeColor }}
+                >
+                  {draftAppSpec.shortName.slice(0, 2).toUpperCase() || 'MK'}
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={iconInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                  onChange={(e) => void handleUploadCustomIcon(e)}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => iconInputRef.current?.click()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{t.appBuilder.uploadIconBtn}</span>
+                </button>
+                {customIconDataUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setCustomIconDataUrl('')}
+                    className="px-2.5 py-1.5 text-xs text-red-600 dark:text-red-400 hover:underline"
+                  >
+                    {t.appBuilder.resetIconBtn}
+                  </button>
+                )}
+              </div>
+            </div>
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+              {t.appBuilder.customIconHint}
+            </p>
+          </div>
         </section>
 
         {/* 02. Model Binding & Runtime Compatibility */}
@@ -1819,6 +1951,17 @@ export function AppBuilderStudio({
                 <Download className="w-3.5 h-3.5 text-red-600 dark:text-red-500" />
                 <span>{t.appBuilder.downloadIconBtn}</span>
               </button>
+
+              {isValidCustomIconDataUrl(customIconDataUrl) && (
+                <button
+                  type="button"
+                  onClick={() => triggerDataUrlDownload('app-icon.png', customIconDataUrl)}
+                  className="inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-lg border border-zinc-200 dark:border-zinc-800 text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 whitespace-nowrap shrink-0"
+                >
+                  <Download className="w-3.5 h-3.5 text-red-600 dark:text-red-500" />
+                  <span>{t.appBuilder.downloadPngIconBtn}</span>
+                </button>
+              )}
 
               <button
                 type="button"

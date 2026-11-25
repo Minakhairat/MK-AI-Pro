@@ -200,17 +200,22 @@ def _run_python_training_worker(job: JobState) -> None:
                 metrics = getattr(trainer, "metrics", {}) or {}
                 loss_items = getattr(trainer, "tloss", None)
                 train_loss = float(loss_items.mean().item()) if hasattr(loss_items, "mean") else 0.0
+                val_box = float(metrics.get("val/box_loss", 0.0))
+                val_cls = float(metrics.get("val/cls_loss", 0.0))
+                val_dfl = float(metrics.get("val/dfl_loss", 0.0))
+                val_loss = (val_box + val_cls + val_dfl) / 3.0 if (val_box + val_cls + val_dfl) > 0 else train_loss
                 val_map50 = float(metrics.get("metrics/mAP50(B)", 0.0))
+                val_f1_approx = float(metrics.get("metrics/precision(B)", 0.0))
                 job.current_epoch = epoch_idx
                 job.epoch_metrics.append({
                     "epoch": epoch_idx,
                     "trainLoss": round(train_loss, 5),
-                    "valLoss": round(train_loss, 5),
-                    "trainMetric": round(val_map50, 4),
+                    "valLoss": round(val_loss, 5),
+                    "trainMetric": round(val_f1_approx, 4),
                     "valMetric": round(val_map50, 4),
                     "durationMs": 0,
                 })
-                if val_map50 >= job.best_val_metric:
+                if val_map50 > job.best_val_metric or len(job.epoch_metrics) == 1:
                     job.best_val_metric = round(val_map50, 4)
                     job.best_epoch = epoch_idx
 
@@ -266,9 +271,29 @@ def _run_python_training_worker(job: JobState) -> None:
         train_ds = datasets.ImageFolder(str(train_dir), transform=tf_train)
         val_ds = datasets.ImageFolder(str(val_dir), transform=tf_val) if val_dir.exists() else train_ds
 
-        train_loader = DataLoader(train_ds, batch_size=job.req.hyperparameters.batchSize, shuffle=True)
-        val_loader = DataLoader(val_ds, batch_size=job.req.hyperparameters.batchSize, shuffle=False)
-        num_classes = len(train_ds.classes)
+        # Enforce consistent class-to-index alignment between train, val, and request classes
+        expected_classes = [c for c in job.req.classes if c in train_ds.class_to_idx]
+        if expected_classes and expected_classes == sorted(expected_classes) and len(expected_classes) == len(train_ds.classes):
+            active_classes = expected_classes
+        else:
+            active_classes = list(train_ds.classes)
+            class_remap = {cls_name: idx for idx, cls_name in enumerate(job.req.classes)}
+            if all(c in class_remap for c in train_ds.classes) and len(job.req.classes) == len(train_ds.classes):
+                train_ds.samples = [(p, class_remap[train_ds.classes[t]]) for p, t in train_ds.samples]
+                train_ds.targets = [s[1] for s in train_ds.samples]
+                if val_ds is not train_ds:
+                    val_ds.samples = [(p, class_remap[val_ds.classes[t]]) for p, t in val_ds.samples]
+                    val_ds.targets = [s[1] for s in val_ds.samples]
+                active_classes = list(job.req.classes)
+
+        if len(train_ds) < 2:
+            raise RuntimeError("PyTorch training requires at least 2 images in train/.")
+
+        effective_batch = min(job.req.hyperparameters.batchSize, len(train_ds))
+        drop_last_for_bn = len(train_ds) > effective_batch and (len(train_ds) % effective_batch == 1)
+        train_loader = DataLoader(train_ds, batch_size=effective_batch, shuffle=True, drop_last=drop_last_for_bn)
+        val_loader = DataLoader(val_ds, batch_size=effective_batch, shuffle=False)
+        num_classes = len(active_classes)
 
         if job.req.architecture == "efficientnet_b0":
             net = models.efficientnet_b0(weights=None)
@@ -287,6 +312,8 @@ def _run_python_training_worker(job: JobState) -> None:
             optimizer = torch.optim.Adam(net.parameters(), lr=job.req.hyperparameters.learningRate)
 
         job_dir = _safe_job_dir(job.job_id)
+        best_val_loss = float("inf")
+        best_val_acc = -1.0
 
         for epoch in range(1, job.total_epochs + 1):
             job.pause_event.wait()
@@ -299,21 +326,38 @@ def _run_python_training_worker(job: JobState) -> None:
             train_loss = 0.0
             train_correct = 0
             train_total = 0
+            before_params = [p.detach().clone() for p in net.parameters() if p.requires_grad] if epoch == 1 else None
 
-            for xb, yb in train_loader:
+            for step_idx, (xb, yb) in enumerate(train_loader):
                 job.pause_event.wait()
                 if job.cancel_event.is_set():
                     job.status = "cancelled"
                     return
+                if xb.size(0) < 2:
+                    continue
                 xb, yb = xb.to(device), yb.to(device)
                 optimizer.zero_grad()
                 logits = net(xb)
                 loss = criterion(logits, yb)
+                if not torch.isfinite(loss):
+                    raise RuntimeError(f"Non-finite training loss detected at epoch {epoch}, step {step_idx}.")
                 loss.backward()
+                if epoch == 1 and step_idx == 0:
+                    grad_norm = sum(float(p.grad.abs().sum().item()) for p in net.parameters() if p.grad is not None)
+                    if grad_norm <= 0:
+                        raise RuntimeError("Zero gradient norm detected during first backward pass.")
+                    job.logs.append(f"[Diagnostic] Initial grad L1 norm = {grad_norm:.4f}")
                 optimizer.step()
                 train_loss += float(loss.item()) * xb.size(0)
                 train_correct += int((logits.argmax(dim=1) == yb).sum().item())
                 train_total += int(xb.size(0))
+
+            if before_params is not None:
+                after_params = [p.detach() for p in net.parameters() if p.requires_grad]
+                param_delta = sum(float((a - b).abs().sum().item()) for a, b in zip(after_params, before_params))
+                if param_delta <= 0:
+                    raise RuntimeError("Model parameters did not update after Epoch 1 optimizer steps.")
+                job.logs.append(f"[Diagnostic] Epoch 1 weight update delta = {param_delta:.4f}")
 
             net.eval()
             val_loss = 0.0
@@ -324,6 +368,8 @@ def _run_python_training_worker(job: JobState) -> None:
                     xb, yb = xb.to(device), yb.to(device)
                     logits = net(xb)
                     loss = criterion(logits, yb)
+                    if not torch.isfinite(loss):
+                        raise RuntimeError(f"Non-finite validation loss detected at epoch {epoch}.")
                     val_loss += float(loss.item()) * xb.size(0)
                     val_correct += int((logits.argmax(dim=1) == yb).sum().item())
                     val_total += int(xb.size(0))
@@ -347,12 +393,14 @@ def _run_python_training_worker(job: JobState) -> None:
                 f"Epoch {epoch}/{job.total_epochs} - loss: {avg_train_loss:.4f} acc: {train_acc:.4f} val_loss: {avg_val_loss:.4f} val_acc: {val_acc:.4f}"
             )
 
-            if val_acc >= job.best_val_metric:
+            if val_acc > best_val_acc or (val_acc == best_val_acc and avg_val_loss < best_val_loss):
+                best_val_acc = val_acc
+                best_val_loss = avg_val_loss
                 job.best_val_metric = round(val_acc, 4)
                 job.best_epoch = epoch
                 if job.req.hyperparameters.saveCheckpoints:
                     ckpt = job_dir / "best.pt"
-                    torch.save({"epoch": epoch, "model_state": net.state_dict(), "classes": train_ds.classes}, ckpt)
+                    torch.save({"epoch": epoch, "model_state": net.state_dict(), "classes": active_classes}, ckpt)
                     job.checkpoint_path = str(ckpt)
 
         job.status = "completed"

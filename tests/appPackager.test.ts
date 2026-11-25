@@ -152,3 +152,38 @@ test('buildStandaloneHtmlApp escapes HTML/script injection and embeds Base64 wei
   assert.match(readme, /PCB Inspector Pro/);
   assert.match(readme, /mk_mobilenet_sep/);
 });
+
+test('Custom app icon PNG data URL is embedded safely into manifest, service worker, and standalone HTML while rejecting unsafe values', () => {
+  const validPngDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const appWithIcon = makeFixtureApp({ customIconDataUrl: validPngDataUrl });
+  const manifest = JSON.parse(buildPwaManifestJson(appWithIcon));
+  assert.equal(manifest.icons[0].src, './app-icon.png');
+  assert.equal(manifest.icons[0].sizes, '192x192');
+  assert.equal(manifest.icons[0].type, 'image/png');
+
+  const sw = buildServiceWorkerJs(appWithIcon);
+  assert.match(sw, /\.\/app-icon\.png/);
+
+  const { html } = buildStandaloneHtmlApp({
+    app: appWithIcon,
+    model: makeFixtureModel(),
+    artifact: null,
+    locale: 'en',
+  });
+  assert.match(html, new RegExp(`<link rel="icon" type="image/png" href="${validPngDataUrl.replace(/[+/=]/g, '\\$&')}"`));
+  assert.match(html, /<img src="data:image\/png;base64,/);
+
+  // Invalid / XSS SVG data URLs must be rejected and fall back to app-icon.svg
+  const appUnsafeIcon = makeFixtureApp({
+    customIconDataUrl: 'data:image/svg+xml;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==',
+  });
+  const fallbackManifest = JSON.parse(buildPwaManifestJson(appUnsafeIcon));
+  assert.equal(fallbackManifest.icons[0].src, './app-icon.svg');
+  const unsafeOut = buildStandaloneHtmlApp({
+    app: appUnsafeIcon,
+    model: makeFixtureModel(),
+    artifact: null,
+    locale: 'en',
+  });
+  assert.equal(unsafeOut.html.includes('PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=='), false);
+});

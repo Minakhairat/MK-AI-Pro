@@ -376,7 +376,7 @@ service cloud.firestore {
           'runtimeTarget', 'inputSources', 'confidenceThreshold', 'iouThreshold',
           'showConfidence', 'showLatency', 'showHistory', 'allowCsvExport',
           'customHeaderTitle', 'alertEnabled', 'alertTargetClass', 'alertMinConfidence',
-          'status', 'version', 'createdAt', 'updatedAt'
+          'customIconDataUrl', 'status', 'version', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
           'id', 'projectId', 'modelId', 'modelName', 'ownerUid', 'taskType',
@@ -384,7 +384,7 @@ service cloud.firestore {
           'runtimeTarget', 'inputSources', 'confidenceThreshold', 'iouThreshold',
           'showConfidence', 'showLatency', 'showHistory', 'allowCsvExport',
           'customHeaderTitle', 'alertEnabled', 'alertTargetClass', 'alertMinConfidence',
-          'status', 'version', 'createdAt', 'updatedAt'
+          'customIconDataUrl', 'status', 'version', 'createdAt', 'updatedAt'
         ])
         && data.id is string && data.id == appId && isValidId(data.id)
         && data.projectId is string && isValidId(data.projectId)
@@ -411,6 +411,8 @@ service cloud.firestore {
         && data.alertEnabled is bool
         && data.alertTargetClass is string && data.alertTargetClass.size() <= 80
         && data.alertMinConfidence is number && data.alertMinConfidence >= 0 && data.alertMinConfidence <= 1
+        && data.customIconDataUrl is string && data.customIconDataUrl.size() <= 150000
+        && (data.customIconDataUrl == '' || data.customIconDataUrl.matches('^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$'))
         && data.status in ['draft', 'ready', 'published']
         && data.version is number && data.version >= 1 && data.version <= 1000
         && data.createdAt is timestamp
@@ -884,7 +886,7 @@ service cloud.firestore {
               'inputSources', 'confidenceThreshold', 'iouThreshold',
               'showConfidence', 'showLatency', 'showHistory', 'allowCsvExport',
               'customHeaderTitle', 'alertEnabled', 'alertTargetClass',
-              'alertMinConfidence', 'status', 'version', 'updatedAt'
+              'alertMinConfidence', 'customIconDataUrl', 'status', 'version', 'updatedAt'
             ])
           )
         );

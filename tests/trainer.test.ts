@@ -12,6 +12,7 @@ import {
   DETECTION_GRID_SIZE,
   encodeGridTargets,
   getRecommendedHyperparameters,
+  runOverfittingSanityTest,
   trainClassifierCore,
   trainDetectorCore,
 } from '../src/lib/tfTrainer.ts';
@@ -66,12 +67,111 @@ test('buildClassificationModel trains via real backpropagation and lowers loss a
     assert.equal(result.epochMetrics.length, 3);
     assert.ok(result.epochMetrics[2].trainLoss <= result.epochMetrics[0].trainLoss + 0.05);
     assert.ok(result.bestValMetric >= 0.5);
+    assert.equal(result.diagnostics.hasNonZeroGradients, true);
+    assert.equal(result.diagnostics.parametersUpdated, true);
+    assert.equal(result.diagnostics.allLossesFinite, true);
+    assert.ok(result.diagnostics.epoch1ParamDelta > 0);
   } finally {
     bright.dispose();
     dark.dispose();
     xTrain.dispose();
     yTrainOH.dispose();
     model.dispose();
+  }
+});
+
+test('runOverfittingSanityTest overfits small separable classification and detection subsets with real gradient updates', async () => {
+  await tf.ready();
+  const inputSize = 32;
+  const bright = tf.fill([2, inputSize, inputSize, 3], 0.92);
+  const dark = tf.fill([2, inputSize, inputSize, 3], 0.08);
+  const xSubset = tf.concat([bright, dark], 0) as tf.Tensor4D;
+  const yIndices = [0, 0, 1, 1];
+  const yOH = tf.oneHot(tf.tensor1d(yIndices, 'int32'), 2) as tf.Tensor2D;
+
+  try {
+    const clsSanity = await runOverfittingSanityTest({
+      taskType: 'image_classification',
+      architecture: 'mk_mobilenet_sep',
+      classes: ['bright', 'dark'],
+      xSubset,
+      ySubsetOneHot: yOH,
+      ySubsetIndices: yIndices,
+      inputSize,
+      steps: 18,
+      learningRate: 0.015,
+    });
+
+    assert.equal(clsSanity.passed, true);
+    assert.equal(clsSanity.hasNonZeroGradients, true);
+    assert.ok(clsSanity.paramDelta > 0);
+    assert.ok(clsSanity.lossReductionPct > 30);
+    assert.ok(clsSanity.subsetAccuracy >= 0.9);
+  } finally {
+    bright.dispose();
+    dark.dispose();
+    xSubset.dispose();
+    yOH.dispose();
+  }
+
+  // Object detection sanity test
+  const xDet = tf.randomUniform([2, inputSize, inputSize, 3], 0, 1) as tf.Tensor4D;
+  const boxesSubset: BoundingBox[][] = [
+    [{ id: 'sb1', className: 'obj', x: 0.15, y: 0.15, width: 0.3, height: 0.3 }],
+    [{ id: 'sb2', className: 'obj', x: 0.55, y: 0.55, width: 0.3, height: 0.3 }],
+  ];
+  try {
+    const detSanity = await runOverfittingSanityTest({
+      taskType: 'object_detection',
+      architecture: 'mk_yolo_grid',
+      classes: ['obj'],
+      xSubset: xDet,
+      boxesSubset,
+      inputSize,
+      steps: 14,
+      learningRate: 0.006,
+    });
+    assert.equal(detSanity.hasNonZeroGradients, true);
+    assert.ok(detSanity.paramDelta > 0);
+    assert.ok(detSanity.finalLoss < detSanity.initialLoss);
+  } finally {
+    xDet.dispose();
+  }
+});
+
+test('Classifier model serialization round-trip preserves exact predictions', async () => {
+  await tf.ready();
+  const inputSize = 32;
+  const model = buildClassificationModel('mk_convnet_deep', inputSize, 2);
+  const sample = tf.randomUniform([1, inputSize, inputSize, 3], 0, 1) as tf.Tensor4D;
+
+  let savedArtifacts: tf.io.ModelArtifacts | null = null;
+  await model.save(
+    tf.io.withSaveHandler(async (artifacts) => {
+      savedArtifacts = artifacts;
+      return {
+        modelArtifactsInfo: {
+          dateSaved: new Date(),
+          modelTopologyType: 'JSON',
+        },
+      };
+    })
+  );
+
+  assert.ok(savedArtifacts);
+  const reloaded = await tf.loadLayersModel(tf.io.fromMemory(savedArtifacts));
+
+  try {
+    const before = Array.from((model.predict(sample) as tf.Tensor).dataSync());
+    const after = Array.from((reloaded.predict(sample) as tf.Tensor).dataSync());
+    assert.equal(before.length, after.length);
+    for (let i = 0; i < before.length; i++) {
+      assert.ok(Math.abs(before[i] - after[i]) < 1e-6);
+    }
+  } finally {
+    sample.dispose();
+    model.dispose();
+    reloaded.dispose();
   }
 });
 
@@ -103,6 +203,7 @@ test('trainDetectorCore executes real grid YOLO gradient updates and supports pa
       model,
       xTrain,
       yTrainTargets: yTargets,
+      trainGroundTruth: gtBoxes,
       xVal: xTrain,
       yValTargets: yTargets,
       valGroundTruth: gtBoxes,
@@ -119,6 +220,8 @@ test('trainDetectorCore executes real grid YOLO gradient updates and supports pa
     assert.equal(res.status, 'completed');
     assert.equal(res.epochMetrics.length, 2);
     assert.ok(Number.isFinite(res.epochMetrics[0].trainLoss));
+    assert.equal(res.diagnostics.hasNonZeroGradients, true);
+    assert.equal(res.diagnostics.parametersUpdated, true);
   } finally {
     xTrain.dispose();
     yTargets.dispose();
@@ -126,9 +229,10 @@ test('trainDetectorCore executes real grid YOLO gradient updates and supports pa
   }
 });
 
-test('computeClassificationMetrics & computeDetectionMetrics produce exact Precision/Recall/F1/mAP', () => {
+test('computeClassificationMetrics & computeDetectionMetrics produce exact Precision/Recall/F1/ErrorRate/mAP50_95/meanIoU', () => {
   const clsStats = computeClassificationMetrics([0, 0, 1, 1], [0, 1, 1, 1], ['cat', 'dog']);
   assert.equal(clsStats.accuracy, 0.75);
+  assert.equal(clsStats.errorRate, 0.25);
   assert.deepEqual(clsStats.confusionFlat, [1, 1, 0, 2]);
   assert.equal(clsStats.perClassMetrics[0].recall, 0.5);
   assert.equal(clsStats.perClassMetrics[1].precision, 0.6667);
@@ -147,6 +251,8 @@ test('computeClassificationMetrics & computeDetectionMetrics produce exact Preci
   assert.equal(detStats.precision, 1);
   assert.equal(detStats.recall, 1);
   assert.equal(detStats.mAP50, 1);
+  assert.ok(detStats.mAP50_95 >= 0.9 && detStats.mAP50_95 <= 1);
+  assert.equal(detStats.meanIoU, 1);
 
   // Grid decoder smoke test
   const raw = new Float32Array(5 * 5 * 6).fill(-10);

@@ -54,6 +54,19 @@ const isDirectRun =
 
 if (isDirectRun) {
   const port = Number(process.env.PORT || 3000);
+  import('./server/providers/cloudAdapter.ts')
+    .then(({ validateStorageConfig }) => {
+      const storageCheck = validateStorageConfig();
+      if (!storageCheck.valid) {
+        console.warn(
+          `[MK AI Storage] Provider "${storageCheck.provider}" has incomplete config: ${storageCheck.errors.join(' ')}`
+        );
+      } else {
+        console.log(`[MK AI Storage] Active provider: ${storageCheck.provider}`);
+      }
+    })
+    .catch(() => {});
+
   createServer()
     .then(({ httpServer }) => {
       httpServer.listen(port, '0.0.0.0', () => {

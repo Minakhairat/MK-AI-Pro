@@ -241,6 +241,11 @@ export interface TranslationDictionary {
     galleryTitle: string;
     openInAnnotator: string;
     deleteImage: string;
+    targetClassTitle: string;
+    targetClassDesc: string;
+    quickClassPlaceholder: string;
+    activeTargetBadge: string;
+    selectClassRequired: string;
   };
   annotationStudio: {
     noDatasetTitle: string;
@@ -329,6 +334,16 @@ export interface TranslationDictionary {
     statusCompleted: string;
     statusCancelled: string;
     statusFailed: string;
+    sanityTestBtn: string;
+    runningSanityBtn: string;
+    sanityTitle: string;
+    sanityPassed: string;
+    sanityFailed: string;
+    validationErrorsTitle: string;
+    validationWarningsTitle: string;
+    errorRateLabel: string;
+    map5095Label: string;
+    meanIoULabel: string;
   };
   evaluationStudio: {
     heading: string;
@@ -491,6 +506,11 @@ export interface TranslationDictionary {
     downloadIconBtn: string;
     downloadReadmeBtn: string;
     downloadConfigBtn: string;
+    customIconLabel: string;
+    uploadIconBtn: string;
+    resetIconBtn: string;
+    customIconHint: string;
+    downloadPngIconBtn: string;
   };
   pwa: {
     installAppBtn: string;
@@ -514,6 +534,7 @@ export interface TranslationDictionary {
     computeAdapter: string;
     statusOk: string;
     statusOffline: string;
+    statusStaticHosting: string;
   };
   settingsView: {
     heading: string;
@@ -832,6 +853,11 @@ export const translations: Record<Locale, TranslationDictionary> = {
       galleryTitle: 'Dataset Media Library',
       openInAnnotator: 'Annotate',
       deleteImage: 'Remove',
+      targetClassTitle: '1. Select Target Class Before Adding Images',
+      targetClassDesc: 'Choose an active class (or quick-create one) — uploaded images, extracted video frames, and camera captures will be labeled and approved automatically into this class.',
+      quickClassPlaceholder: 'Quick-add new class...',
+      activeTargetBadge: 'Active Target',
+      selectClassRequired: 'Select or create a target class above before uploading or capturing images.',
     },
     annotationStudio: {
       noDatasetTitle: 'No Dataset Selected',
@@ -920,6 +946,16 @@ export const translations: Record<Locale, TranslationDictionary> = {
       statusCompleted: 'Completed',
       statusCancelled: 'Cancelled',
       statusFailed: 'Failed',
+      sanityTestBtn: 'Run Overfitting Sanity Check',
+      runningSanityBtn: 'Running Sanity Check...',
+      sanityTitle: 'Model Learning Sanity Test (Small-Subset Overfit)',
+      sanityPassed: 'PASSED — Model learns & parameters updated',
+      sanityFailed: 'FAILED — Check dataset / architecture diagnostics',
+      validationErrorsTitle: 'Dataset Validation Blocked Training',
+      validationWarningsTitle: 'Dataset Diagnostics',
+      errorRateLabel: 'Error Rate',
+      map5095Label: 'mAP@0.5:0.95',
+      meanIoULabel: 'Mean IoU',
     },
     evaluationStudio: {
       heading: 'Model Evaluation Studio',
@@ -1084,6 +1120,11 @@ export const translations: Record<Locale, TranslationDictionary> = {
       downloadIconBtn: 'App Icon (.svg)',
       downloadReadmeBtn: 'Host Guide (README.md)',
       downloadConfigBtn: 'Config (.mkapp.json)',
+      customIconLabel: 'Custom App Icon (Optional)',
+      uploadIconBtn: 'Upload Icon Image',
+      resetIconBtn: 'Reset Default',
+      customIconHint: 'PNG, JPG, WebP, or SVG — resized to 192×192 PNG and embedded in your standalone app & PWA manifest.',
+      downloadPngIconBtn: 'App Icon (.png)',
     },
     pwa: {
       installAppBtn: 'Install MK AI App',
@@ -1109,6 +1150,7 @@ export const translations: Record<Locale, TranslationDictionary> = {
       computeAdapter: 'Compute Adapter',
       statusOk: 'Operational',
       statusOffline: 'Unavailable',
+      statusStaticHosting: 'Static Web Mode (GitHub Pages Ready)',
     },
     settingsView: {
       heading: 'Account, Security & Credits',
@@ -1426,6 +1468,11 @@ export const translations: Record<Locale, TranslationDictionary> = {
       galleryTitle: 'مكتبة صور المجموعة',
       openInAnnotator: 'تحديد',
       deleteImage: 'حذف',
+      targetClassTitle: '1. اختر الفئة المستهدفة أولاً قبل إضافة الصور',
+      targetClassDesc: 'اختر الفئة أو أضف فئة جديدة أولاً — كل الصور المرفوعة أو لقطات الفيديو أو الكاميرا ستُضاف وتُعتمد تلقائياً داخل هذه الفئة.',
+      quickClassPlaceholder: 'أضف فئة جديدة سريعاً...',
+      activeTargetBadge: 'الفئة المستهدفة',
+      selectClassRequired: 'يرجى اختيار أو إنشاء فئة مستهدفة أعلاه قبل رفع أو التقاط الصور.',
     },
     annotationStudio: {
       noDatasetTitle: 'لا توجد مجموعة بيانات',
@@ -1514,6 +1561,16 @@ export const translations: Record<Locale, TranslationDictionary> = {
       statusCompleted: 'مكتمل',
       statusCancelled: 'ملغي',
       statusFailed: 'فشل',
+      sanityTestBtn: 'اختبار قدرة التعلم (Sanity Check)',
+      runningSanityBtn: 'جارٍ فحص قدرة التعلم...',
+      sanityTitle: 'اختبار قدرة التعلم الفعلي على عينة صغيرة',
+      sanityPassed: 'ناجح — النموذج يتعلم وتحدث الأوزان',
+      sanityFailed: 'فشل — راجع تشخيص البيانات أو البنية',
+      validationErrorsTitle: 'أخطاء في التحقق من البيانات تمنع التدريب',
+      validationWarningsTitle: 'ملاحظات فحص البيانات',
+      errorRateLabel: 'نسبة الخطأ',
+      map5095Label: 'mAP@0.5:0.95',
+      meanIoULabel: 'متوسط IoU',
     },
     evaluationStudio: {
       heading: 'استوديو تقييم ومقارنة النماذج',
@@ -1678,6 +1735,11 @@ export const translations: Record<Locale, TranslationDictionary> = {
       downloadIconBtn: 'أيقونة التطبيق (.svg)',
       downloadReadmeBtn: 'دليل الاستضافة (README.md)',
       downloadConfigBtn: 'ملف الإعدادات (.mkapp.json)',
+      customIconLabel: 'أيقونة التطبيق المخصصة (اختياري)',
+      uploadIconBtn: 'رفع صورة الأيقونة',
+      resetIconBtn: 'استعادة الأيقونة الافتراضية',
+      customIconHint: 'PNG أو JPG أو WebP أو SVG — تُحجّم تلقائياً إلى 192×192 PNG وتُضمّن داخل التطبيق وملف التثبيت PWA.',
+      downloadPngIconBtn: 'أيقونة التطبيق (.png)',
     },
     pwa: {
       installAppBtn: 'تثبيت تطبيق MK AI',
@@ -1703,6 +1765,7 @@ export const translations: Record<Locale, TranslationDictionary> = {
       computeAdapter: 'محول الحوسبة',
       statusOk: 'يعمل',
       statusOffline: 'غير متاح',
+      statusStaticHosting: 'وضع الويب الثابت (جاهز لـ GitHub Pages)',
     },
     settingsView: {
       heading: 'الحساب والأمان والرصيد',

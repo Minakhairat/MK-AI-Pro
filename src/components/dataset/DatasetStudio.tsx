@@ -17,7 +17,7 @@ import { useI18n } from '../../contexts/I18nContext';
 import {
   ALLOWED_IMAGE_MIMES,
   analyzeImageBlob,
-  assignSplitForIndex,
+  assignStratifiedSplits,
   auditDatasetQuality,
   DEFAULT_AUGMENTATION_CONFIG,
   exportToCocoJson,
@@ -25,6 +25,7 @@ import {
   extractVideoFrames,
   parseCocoJson,
   parseYoloLabels,
+  pickIncrementalSplit,
   renderAugmentationPreview,
 } from '../../lib/datasetUtils';
 import { getMediaBlob, saveMediaBlob } from '../../lib/localMediaStore';
@@ -142,6 +143,8 @@ export function DatasetStudio({
 
   // Classes & Splits state
   const [newClassInput, setNewClassInput] = useState('');
+  const [quickClassInput, setQuickClassInput] = useState('');
+  const [activeUploadClass, setActiveUploadClass] = useState('');
   const [trainPct, setTrainPct] = useState(activeDataset?.splitTrainPct ?? 70);
   const [valPct, setValPct] = useState(activeDataset?.splitValPct ?? 20);
   const [testPct, setTestPct] = useState(activeDataset?.splitTestPct ?? 10);
@@ -158,6 +161,11 @@ export function DatasetStudio({
       setValPct(activeDataset.splitValPct);
       setTestPct(activeDataset.splitTestPct);
       setAugCfg(activeDataset.augmentationConfig || DEFAULT_AUGMENTATION_CONFIG);
+      if (activeDataset.classes.length === 0) {
+        setActiveUploadClass('');
+      } else if (!activeDataset.classes.includes(activeUploadClass)) {
+        setActiveUploadClass(activeDataset.classes[0]);
+      }
     }
   }, [activeDataset]);
 
@@ -228,23 +236,67 @@ export function DatasetStudio({
     }
   };
 
+  const classItemCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    if (activeDataset) {
+      for (const cls of activeDataset.classes) {
+        counts[cls] = 0;
+      }
+    }
+    for (const it of items) {
+      if (project.taskType === 'image_classification') {
+        const lbl = it.classificationLabel.trim();
+        if (lbl) counts[lbl] = (counts[lbl] || 0) + 1;
+      } else {
+        for (const box of it.annotations) {
+          counts[box.className] = (counts[box.className] || 0) + 1;
+        }
+      }
+    }
+    return counts;
+  }, [activeDataset, items, project.taskType]);
+
+  const handleQuickAddClass = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeDataset) return;
+    const clean = quickClassInput.trim().slice(0, 80);
+    if (!clean) return;
+    setErrMsg(null);
+    if (!activeDataset.classes.includes(clean)) {
+      await updateDatasetClassesAndMeta({
+        datasetId: activeDataset.id,
+        name: activeDataset.name,
+        description: activeDataset.description,
+        classes: [...activeDataset.classes, clean].slice(0, 50),
+        version: activeDataset.version,
+      });
+    }
+    setActiveUploadClass(clean);
+    setQuickClassInput('');
+  };
+
   const ingestSingleBlob = async (params: {
     blob: Blob;
     filename: string;
     mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
     sourceType: DatasetSourceType;
-    index: number;
-    total: number;
     classificationLabel?: string;
     annotations?: BoundingBox[];
-  }) => {
-    if (!activeDataset) return;
+    isApproved?: boolean;
+    workingItems?: DatasetItem[];
+  }): Promise<DatasetItem | null> => {
+    if (!activeDataset) return null;
     const analysis = await analyzeImageBlob(params.blob);
-    const split = assignSplitForIndex(
-      params.index,
-      params.total,
+    const labelForSplit =
+      params.classificationLabel ||
+      params.annotations?.[0]?.className ||
+      '';
+    const split = pickIncrementalSplit(
+      params.workingItems || items,
+      labelForSplit,
       activeDataset.splitTrainPct,
-      activeDataset.splitValPct
+      activeDataset.splitValPct,
+      project.taskType
     );
     const item = await addDatasetItem({
       datasetId: activeDataset.id,
@@ -261,8 +313,10 @@ export function DatasetStudio({
       classificationLabel: params.classificationLabel || '',
       annotations: params.annotations || [],
       blurScore: analysis.blurScore,
+      isApproved: Boolean(params.isApproved),
     });
     await saveMediaBlob(item.id, activeDataset.id, params.blob);
+    return item;
   };
 
   const syncCountersAfterChange = async (addedCount: number, addedAnnotated: number) => {
@@ -275,9 +329,22 @@ export function DatasetStudio({
     });
   };
 
+  const requireClassificationTargetClass = (): string | null => {
+    if (project.taskType !== 'image_classification') return '';
+    const clean = activeUploadClass.trim();
+    if (!clean) {
+      setErrMsg(t.datasetStudio.selectClassRequired);
+      return null;
+    }
+    return clean;
+  };
+
   const handleImageUpload = async (files: FileList | null) => {
     if (!files || !activeDataset) return;
     setErrMsg(null);
+    const targetLabel = requireClassificationTargetClass();
+    if (targetLabel === null) return;
+
     const validFiles = Array.from(files).filter((f) =>
       ALLOWED_IMAGE_MIMES.has(f.type)
     );
@@ -288,20 +355,25 @@ export function DatasetStudio({
 
     setBusyMsg(`Uploading ${validFiles.length} image(s)...`);
     try {
+      const workingItems = [...items];
       let added = 0;
       for (let i = 0; i < validFiles.length; i++) {
         const file = validFiles[i];
-        await ingestSingleBlob({
+        const createdItem = await ingestSingleBlob({
           blob: file,
           filename: file.name,
           mimeType: file.type as 'image/jpeg' | 'image/png' | 'image/webp',
           sourceType: 'upload',
-          index: items.length + i,
-          total: items.length + validFiles.length,
+          classificationLabel: targetLabel,
+          isApproved: Boolean(targetLabel),
+          workingItems,
         });
+        if (createdItem) {
+          workingItems.push(createdItem);
+        }
         added++;
       }
-      await syncCountersAfterChange(added, 0);
+      await syncCountersAfterChange(added, targetLabel ? added : 0);
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : 'Image upload failed.');
     } finally {
@@ -311,8 +383,11 @@ export function DatasetStudio({
 
   const handleVideoExtract = async (files: FileList | null) => {
     if (!files || files.length === 0 || !activeDataset) return;
-    const videoFile = files[0];
     setErrMsg(null);
+    const targetLabel = requireClassificationTargetClass();
+    if (targetLabel === null) return;
+
+    const videoFile = files[0];
     setBusyMsg('Extracting video frames...');
     try {
       const frames = await extractVideoFrames(
@@ -321,17 +396,22 @@ export function DatasetStudio({
         videoMaxFrames,
         (count) => setBusyMsg(`Extracted ${count} frame(s)...`)
       );
+      const workingItems = [...items];
       for (let i = 0; i < frames.length; i++) {
-        await ingestSingleBlob({
+        const createdItem = await ingestSingleBlob({
           blob: frames[i].blob,
           filename: frames[i].filename,
           mimeType: 'image/jpeg',
           sourceType: 'video_frame',
-          index: items.length + i,
-          total: items.length + frames.length,
+          classificationLabel: targetLabel,
+          isApproved: Boolean(targetLabel),
+          workingItems,
         });
+        if (createdItem) {
+          workingItems.push(createdItem);
+        }
       }
-      await syncCountersAfterChange(frames.length, 0);
+      await syncCountersAfterChange(frames.length, targetLabel ? frames.length : 0);
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : 'Video extraction failed.');
     } finally {
@@ -384,6 +464,15 @@ export function DatasetStudio({
 
   const captureCameraFrame = async () => {
     if (!videoRef.current || !activeDataset) return;
+    const targetLabel = requireClassificationTargetClass();
+    if (targetLabel === null) {
+      if (burstTimerRef.current) {
+        window.clearInterval(burstTimerRef.current);
+        burstTimerRef.current = null;
+        setBurstRunning(false);
+      }
+      return;
+    }
     const video = videoRef.current;
     if (!video.videoWidth || !video.videoHeight) return;
 
@@ -405,10 +494,10 @@ export function DatasetStudio({
       filename: fname,
       mimeType: 'image/jpeg',
       sourceType: 'camera',
-      index: items.length,
-      total: items.length + 1,
+      classificationLabel: targetLabel,
+      isApproved: Boolean(targetLabel),
     });
-    await syncCountersAfterChange(1, 0);
+    await syncCountersAfterChange(1, targetLabel ? 1 : 0);
   };
 
   const toggleBurstCapture = () => {
@@ -418,6 +507,8 @@ export function DatasetStudio({
       setBurstRunning(false);
       return;
     }
+    const targetLabel = requireClassificationTargetClass();
+    if (targetLabel === null) return;
     setBurstCount(0);
     setBurstRunning(true);
     burstTimerRef.current = window.setInterval(() => {
@@ -461,6 +552,7 @@ export function DatasetStudio({
 
       const imageFiles = fileArr.filter((f) => ALLOWED_IMAGE_MIMES.has(f.type));
       let addedAnnotated = 0;
+      const workingItems = [...items];
       for (let i = 0; i < imageFiles.length; i++) {
         const imgFile = imageFiles[i];
         const stem = imgFile.name.replace(/\.[^.]+$/, '');
@@ -468,15 +560,18 @@ export function DatasetStudio({
         const boxes = txt ? parseYoloLabels(txt, importedClasses) : [];
         if (boxes.length > 0) addedAnnotated++;
 
-        await ingestSingleBlob({
+        const createdItem = await ingestSingleBlob({
           blob: imgFile,
           filename: imgFile.name,
           mimeType: imgFile.type as 'image/jpeg' | 'image/png' | 'image/webp',
           sourceType: 'import_yolo',
-          index: items.length + i,
-          total: items.length + imageFiles.length,
           annotations: boxes,
+          isApproved: boxes.length > 0,
+          workingItems,
         });
+        if (createdItem) {
+          workingItems.push(createdItem);
+        }
       }
       await syncCountersAfterChange(imageFiles.length, addedAnnotated);
     } catch (err) {
@@ -511,19 +606,23 @@ export function DatasetStudio({
 
       const imageFiles = fileArr.filter((f) => ALLOWED_IMAGE_MIMES.has(f.type));
       let addedAnnotated = 0;
+      const workingItems = [...items];
       for (let i = 0; i < imageFiles.length; i++) {
         const imgFile = imageFiles[i];
         const boxes = parsed.annotationsByFilename.get(imgFile.name) || [];
         if (boxes.length > 0) addedAnnotated++;
-        await ingestSingleBlob({
+        const createdItem = await ingestSingleBlob({
           blob: imgFile,
           filename: imgFile.name,
           mimeType: imgFile.type as 'image/jpeg' | 'image/png' | 'image/webp',
           sourceType: 'import_coco',
-          index: items.length + i,
-          total: items.length + imageFiles.length,
           annotations: boxes,
+          isApproved: boxes.length > 0,
+          workingItems,
         });
+        if (createdItem) {
+          workingItems.push(createdItem);
+        }
       }
       await syncCountersAfterChange(imageFiles.length, addedAnnotated);
     } catch (err) {
@@ -545,6 +644,7 @@ export function DatasetStudio({
       classes: [...activeDataset.classes, clean],
       version: activeDataset.version,
     });
+    setActiveUploadClass(clean);
     setNewClassInput('');
   };
 
@@ -567,7 +667,7 @@ export function DatasetStudio({
       setErrMsg(t.datasetStudio.splitSumError);
       return;
     }
-    setBusyMsg('Updating dataset splits...');
+    setBusyMsg('Updating stratified dataset splits...');
     try {
       await updateDatasetSplits({
         datasetId: activeDataset.id,
@@ -575,9 +675,10 @@ export function DatasetStudio({
         splitValPct: valPct,
         splitTestPct: testPct,
       });
-      const updates = items.map((item, idx) => ({
+      const stratifiedMap = assignStratifiedSplits(items, trainPct, valPct, project.taskType);
+      const updates = items.map((item) => ({
         itemId: item.id,
-        split: assignSplitForIndex(idx, items.length, trainPct, valPct),
+        split: stratifiedMap.get(item.id) || 'train',
       }));
       await applyBulkItemSplits({ datasetId: activeDataset.id, updates });
     } catch (err) {
@@ -813,6 +914,87 @@ export function DatasetStudio({
       {/* SUBTAB 1: COLLECT & IMPORT */}
       {subTab === 'ingest' && activeDataset && (
         <div className="space-y-6">
+          {/* Class-First Selection Bar for Image Classification */}
+          {project.taskType === 'image_classification' && (
+            <div className="border-2 border-red-600/30 rounded-xl p-5 bg-white dark:bg-zinc-900 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-display font-bold text-zinc-900 dark:text-zinc-100">
+                    {t.datasetStudio.targetClassTitle}
+                  </h3>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-0.5 leading-relaxed">
+                    {t.datasetStudio.targetClassDesc}
+                  </p>
+                </div>
+                {activeUploadClass && (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-red-600 text-white text-xs font-semibold shrink-0">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>
+                      {t.datasetStudio.activeTargetBadge}: {activeUploadClass}
+                    </span>
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {activeDataset.classes.map((cls) => {
+                  const isActive = activeUploadClass === cls;
+                  const count = classItemCounts[cls] || 0;
+                  return (
+                    <button
+                      key={cls}
+                      type="button"
+                      onClick={() => {
+                        setActiveUploadClass(cls);
+                        setErrMsg(null);
+                      }}
+                      className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-colors ${
+                        isActive
+                          ? 'border-red-600 bg-red-600 text-white'
+                          : 'border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 text-zinc-800 dark:text-zinc-200 hover:border-red-600/60'
+                      }`}
+                    >
+                      <span>{cls}</span>
+                      <span
+                        className={`font-mono text-[11px] tabular-nums px-1.5 py-0.5 rounded ${
+                          isActive
+                            ? 'bg-white/20 text-white'
+                            : 'bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <form onSubmit={handleQuickAddClass} className="flex flex-wrap gap-2 pt-1">
+                <input
+                  type="text"
+                  maxLength={80}
+                  value={quickClassInput}
+                  onChange={(e) => setQuickClassInput(e.target.value)}
+                  placeholder={t.datasetStudio.quickClassPlaceholder}
+                  className="flex-1 min-w-[200px] px-3 py-1.5 text-xs rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950 focus:outline-none focus:ring-2 focus:ring-red-600"
+                />
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 hover:opacity-90 whitespace-nowrap"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>{t.datasetStudio.addClassBtn}</span>
+                </button>
+              </form>
+
+              {!activeUploadClass && (
+                <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">
+                  {t.datasetStudio.selectClassRequired}
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Image Upload */}
             <div className="border border-zinc-200 dark:border-zinc-800 rounded-xl p-5 bg-white dark:bg-zinc-900 space-y-3">

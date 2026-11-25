@@ -19,24 +19,71 @@ async function getAuthHeaders(): Promise<HeadersInit> {
   };
 }
 
+function buildStaticHostingHealth(): BackendHealthResponse {
+  return {
+    status: 'static_hosting',
+    staticHosting: true,
+    service: 'mk-ai-static-web',
+    phase: 'Static Hosting · In-Browser TensorFlow.js',
+    timestamp: new Date().toISOString(),
+    uptimeSeconds: 0,
+    adapters: {
+      storage: {
+        provider: 'local',
+        region: 'browser-indexeddb',
+        configured: true,
+        supportsPrivateLocalFirst: true,
+        description:
+          'Static hosting active (GitHub Pages): media blobs and model weights are stored privately in browser IndexedDB.',
+      },
+      compute: {
+        provider: 'tfjs-browser',
+        supportsCpuWorkers: true,
+        supportsGpuWorkers: true,
+        aiEngineConfigured: false,
+      },
+    },
+  };
+}
+
 export async function fetchBackendHealth(): Promise<BackendHealthResponse> {
-  const res = await fetch('/api/health');
-  if (!res.ok) {
-    throw new Error(`Health endpoint failed with HTTP ${res.status}`);
+  try {
+    const res = await fetch('/api/health');
+    const ct = res.headers.get('content-type') || '';
+    if (!res.ok || !ct.includes('application/json')) {
+      return buildStaticHostingHealth();
+    }
+    return (await res.json()) as BackendHealthResponse;
+  } catch {
+    return buildStaticHostingHealth();
   }
-  return (await res.json()) as BackendHealthResponse;
 }
 
 export async function pingAiEngine(): Promise<AiEnginePingResponse> {
-  const headers = await getAuthHeaders();
-  const res = await fetch('/api/ai-engine/ping', {
-    method: 'POST',
-    headers,
-  });
-  if (!res.ok) {
-    throw new Error(`AI Engine probe failed with HTTP ${res.status}`);
+  try {
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/ai-engine/ping', {
+      method: 'POST',
+      headers,
+    });
+    const ct = res.headers.get('content-type') || '';
+    if (!res.ok || !ct.includes('application/json')) {
+      return {
+        reachable: false,
+        status: 'not_configured',
+        message: 'Static web hosting mode — in-browser TensorFlow.js neural engine active.',
+        hardware: null,
+      };
+    }
+    return (await res.json()) as AiEnginePingResponse;
+  } catch {
+    return {
+      reachable: false,
+      status: 'not_configured',
+      message: 'Backend gateway unreachable — in-browser TensorFlow.js neural engine active.',
+      hardware: null,
+    };
   }
-  return (await res.json()) as AiEnginePingResponse;
 }
 
 export async function verifyServerSession(): Promise<{

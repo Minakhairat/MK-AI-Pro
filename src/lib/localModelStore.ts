@@ -355,10 +355,23 @@ export const TASK_TYPE = '${model.taskType}';
 
 export async function runMkAiInference(modelUrl: string, imageEl: HTMLImageElement | HTMLCanvasElement) {
   const model = await tf.loadLayersModel(modelUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = INPUT_SIZE;
+  canvas.height = INPUT_SIZE;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = '#09090b';
+    ctx.fillRect(0, 0, INPUT_SIZE, INPUT_SIZE);
+    const sw = imageEl instanceof HTMLImageElement ? imageEl.naturalWidth || imageEl.width : imageEl.width;
+    const sh = imageEl instanceof HTMLImageElement ? imageEl.naturalHeight || imageEl.height : imageEl.height;
+    const scale = Math.min(INPUT_SIZE / Math.max(1, sw), INPUT_SIZE / Math.max(1, sh));
+    const dw = sw * scale;
+    const dh = sh * scale;
+    ctx.drawImage(imageEl, (INPUT_SIZE - dw) / 2, (INPUT_SIZE - dh) / 2, dw, dh);
+  }
   const input = tf.tidy(() => {
     return tf.browser
-      .fromPixels(imageEl)
-      .resizeBilinear([INPUT_SIZE, INPUT_SIZE])
+      .fromPixels(canvas)
       .toFloat()
       .div(255.0)
       .expandDims(0);
