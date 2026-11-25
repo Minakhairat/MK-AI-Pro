@@ -1,0 +1,6 @@
+{
+  "name": "MK AI — by MK Tech",
+  "description": "Professional Computer Vision AI Model Training & Application Generation Platform by MK Tech.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

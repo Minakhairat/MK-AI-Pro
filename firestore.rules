@@ -1,0 +1,918 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny all unmatched paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Reusable Global Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'minakhairat1@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // --- Validation Blueprints (Anti-Update-Gap) ---
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid', 'email', 'displayName', 'preferredLocale', 'preferredTheme',
+          'planTier', 'storageUsedBytes', 'storageQuotaBytes', 'cloudCreditsBalance',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'preferredLocale', 'preferredTheme',
+          'planTier', 'storageUsedBytes', 'storageQuotaBytes', 'cloudCreditsBalance',
+          'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && data.uid == userId && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && data.preferredLocale in ['en', 'ar']
+        && data.preferredTheme in ['light', 'dark']
+        && data.planTier in ['free', 'pro', 'enterprise']
+        && data.storageUsedBytes is number && data.storageUsedBytes >= 0
+        && data.storageQuotaBytes is number && data.storageQuotaBytes >= 0
+        && data.cloudCreditsBalance is number && data.cloudCreditsBalance >= 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspace(data, workspaceId) {
+      return data.keys().hasAll([
+          'id', 'name', 'type', 'ownerUid', 'storageProvider', 'cloudRegion', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'type', 'ownerUid', 'storageProvider', 'cloudRegion', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == workspaceId && isValidId(data.id)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 100
+        && data.type in ['personal', 'team']
+        && data.ownerUid is string && isValidId(data.ownerUid)
+        && data.storageProvider in ['local', 'cloud']
+        && data.cloudRegion is string && data.cloudRegion.size() >= 1 && data.cloudRegion.size() <= 64
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceMember(data, workspaceId, memberUid) {
+      return data.keys().hasAll(['uid', 'workspaceId', 'role', 'addedAt'])
+        && data.keys().hasOnly(['uid', 'workspaceId', 'role', 'addedAt'])
+        && data.uid is string && data.uid == memberUid && isValidId(data.uid)
+        && data.workspaceId is string && data.workspaceId == workspaceId && isValidId(data.workspaceId)
+        && data.role in ['owner', 'admin', 'trainer', 'annotator', 'viewer']
+        && data.addedAt is timestamp;
+    }
+
+    function isValidProject(data, projectId) {
+      return data.keys().hasAll([
+          'id', 'workspaceId', 'ownerUid', 'name', 'description', 'taskType',
+          'engineVersion', 'status', 'trainingMode', 'storageLocation',
+          'cloudConsentGranted', 'datasetCount', 'modelCount', 'appCount',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'workspaceId', 'ownerUid', 'name', 'description', 'taskType',
+          'engineVersion', 'status', 'trainingMode', 'storageLocation',
+          'cloudConsentGranted', 'datasetCount', 'modelCount', 'appCount',
+          'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == projectId && isValidId(data.id)
+        && data.workspaceId is string && isValidId(data.workspaceId)
+        && data.ownerUid is string && isValidId(data.ownerUid)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 100
+        && data.description is string && data.description.size() <= 500
+        && data.taskType in ['image_classification', 'object_detection']
+        && data.engineVersion == 'v1.0'
+        && data.status in ['draft', 'dataset_ready', 'training', 'trained', 'deployed']
+        && data.trainingMode in ['beginner', 'advanced']
+        && data.storageLocation in ['local', 'cloud']
+        && data.cloudConsentGranted is bool
+        && (data.storageLocation == 'local' || data.cloudConsentGranted == true)
+        && data.datasetCount is number && data.datasetCount >= 0
+        && data.modelCount is number && data.modelCount >= 0
+        && data.appCount is number && data.appCount >= 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAugmentationConfig(cfg) {
+      return cfg is map
+        && cfg.keys().hasAll([
+          'rotateDeg', 'flipHorizontal', 'flipVertical',
+          'brightnessDelta', 'contrastDelta', 'noiseLevel',
+          'blurRadius', 'resizeWidth', 'resizeHeight', 'applyOnlyToTrain'
+        ])
+        && cfg.keys().hasOnly([
+          'rotateDeg', 'flipHorizontal', 'flipVertical',
+          'brightnessDelta', 'contrastDelta', 'noiseLevel',
+          'blurRadius', 'resizeWidth', 'resizeHeight', 'applyOnlyToTrain'
+        ])
+        && cfg.rotateDeg is number && cfg.rotateDeg >= 0 && cfg.rotateDeg <= 180
+        && cfg.flipHorizontal is bool
+        && cfg.flipVertical is bool
+        && cfg.brightnessDelta is number && cfg.brightnessDelta >= 0 && cfg.brightnessDelta <= 100
+        && cfg.contrastDelta is number && cfg.contrastDelta >= 0 && cfg.contrastDelta <= 100
+        && cfg.noiseLevel is number && cfg.noiseLevel >= 0 && cfg.noiseLevel <= 50
+        && cfg.blurRadius is number && cfg.blurRadius >= 0 && cfg.blurRadius <= 10
+        && cfg.resizeWidth is number && cfg.resizeWidth >= 64 && cfg.resizeWidth <= 2048
+        && cfg.resizeHeight is number && cfg.resizeHeight >= 64 && cfg.resizeHeight <= 2048
+        && cfg.applyOnlyToTrain == true;
+    }
+
+    function isValidDataset(data, datasetId) {
+      return data.keys().hasAll([
+          'id', 'projectId', 'ownerUid', 'name', 'description', 'version',
+          'classes', 'splitTrainPct', 'splitValPct', 'splitTestPct',
+          'augmentationConfig', 'imageCount', 'annotatedCount', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'projectId', 'ownerUid', 'name', 'description', 'version',
+          'classes', 'splitTrainPct', 'splitValPct', 'splitTestPct',
+          'augmentationConfig', 'imageCount', 'annotatedCount', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == datasetId && isValidId(data.id)
+        && data.projectId is string && isValidId(data.projectId)
+        && data.ownerUid is string && isValidId(data.ownerUid)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 100
+        && data.description is string && data.description.size() <= 500
+        && data.version is number && data.version >= 1 && data.version <= 1000
+        && data.classes is list && data.classes.size() <= 50
+        && (data.classes.size() == 0 || (data.classes[0] is string && data.classes[0].size() >= 1 && data.classes[0].size() <= 80))
+        && data.splitTrainPct is number && data.splitTrainPct >= 0 && data.splitTrainPct <= 100
+        && data.splitValPct is number && data.splitValPct >= 0 && data.splitValPct <= 100
+        && data.splitTestPct is number && data.splitTestPct >= 0 && data.splitTestPct <= 100
+        && (data.splitTrainPct + data.splitValPct + data.splitTestPct) == 100
+        && isValidAugmentationConfig(data.augmentationConfig)
+        && data.imageCount is number && data.imageCount >= 0
+        && data.annotatedCount is number && data.annotatedCount >= 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDatasetItem(data, datasetId, itemId) {
+      return data.keys().hasAll([
+          'id', 'datasetId', 'projectId', 'ownerUid', 'filename', 'mimeType',
+          'width', 'height', 'sizeBytes', 'sha256', 'sourceType', 'split',
+          'classificationLabel', 'annotations', 'blurScore', 'isApproved',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'datasetId', 'projectId', 'ownerUid', 'filename', 'mimeType',
+          'width', 'height', 'sizeBytes', 'sha256', 'sourceType', 'split',
+          'classificationLabel', 'annotations', 'blurScore', 'isApproved',
+          'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == itemId && isValidId(data.id)
+        && data.datasetId is string && data.datasetId == datasetId && isValidId(data.datasetId)
+        && data.projectId is string && isValidId(data.projectId)
+        && data.ownerUid is string && isValidId(data.ownerUid)
+        && data.filename is string && data.filename.size() >= 1 && data.filename.size() <= 180
+        && data.mimeType in ['image/jpeg', 'image/png', 'image/webp']
+        && data.width is number && data.width >= 1 && data.width <= 16384
+        && data.height is number && data.height >= 1 && data.height <= 16384
+        && data.sizeBytes is number && data.sizeBytes >= 1 && data.sizeBytes <= 52428800
+        && data.sha256 is string && data.sha256.size() == 64
+        && data.sourceType in ['upload', 'camera', 'video_frame', 'import_yolo', 'import_coco']
+        && data.split in ['train', 'val', 'test']
+        && data.classificationLabel is string && data.classificationLabel.size() <= 80
+        && data.annotations is list && data.annotations.size() <= 100
+        && (data.annotations.size() == 0 || data.annotations[0] is map)
+        && data.blurScore is number && data.blurScore >= 0
+        && data.isApproved is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidHyperparameters(hp) {
+      return hp is map
+        && hp.keys().hasAll([
+          'epochs', 'batchSize', 'learningRate', 'optimizer',
+          'inputSize', 'confidenceThreshold', 'iouThreshold',
+          'earlyStoppingPatience', 'saveCheckpoints'
+        ])
+        && hp.keys().hasOnly([
+          'epochs', 'batchSize', 'learningRate', 'optimizer',
+          'inputSize', 'confidenceThreshold', 'iouThreshold',
+          'earlyStoppingPatience', 'saveCheckpoints'
+        ])
+        && hp.epochs is number && hp.epochs >= 1 && hp.epochs <= 200
+        && hp.batchSize is number && hp.batchSize >= 1 && hp.batchSize <= 128
+        && hp.learningRate is number && hp.learningRate > 0 && hp.learningRate <= 1
+        && hp.optimizer in ['adam', 'sgd', 'rmsprop']
+        && hp.inputSize is number && hp.inputSize >= 32 && hp.inputSize <= 1024
+        && hp.confidenceThreshold is number && hp.confidenceThreshold >= 0 && hp.confidenceThreshold <= 1
+        && hp.iouThreshold is number && hp.iouThreshold >= 0 && hp.iouThreshold <= 1
+        && hp.earlyStoppingPatience is number && hp.earlyStoppingPatience >= 0 && hp.earlyStoppingPatience <= 50
+        && hp.saveCheckpoints is bool;
+    }
+
+    function isValidTrainingRun(data, runId) {
+      return data.keys().hasAll([
+          'id', 'projectId', 'datasetId', 'datasetVersion', 'ownerUid',
+          'taskType', 'backendEngine', 'architecture', 'trainingMode',
+          'hyperparameters', 'status', 'currentEpoch', 'totalEpochs',
+          'epochMetrics', 'bestEpoch', 'bestValMetric', 'checkpointSaved',
+          'hardwareSummary', 'errorMessage', 'completedAt', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'projectId', 'datasetId', 'datasetVersion', 'ownerUid',
+          'taskType', 'backendEngine', 'architecture', 'trainingMode',
+          'hyperparameters', 'status', 'currentEpoch', 'totalEpochs',
+          'epochMetrics', 'bestEpoch', 'bestValMetric', 'checkpointSaved',
+          'hardwareSummary', 'errorMessage', 'completedAt', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == runId && isValidId(data.id)
+        && data.projectId is string && isValidId(data.projectId)
+        && data.datasetId is string && isValidId(data.datasetId)
+        && data.datasetVersion is number && data.datasetVersion >= 1 && data.datasetVersion <= 1000
+        && data.ownerUid is string && isValidId(data.ownerUid)
+        && data.taskType in ['image_classification', 'object_detection']
+        && data.backendEngine in ['tfjs_browser', 'python_fastapi']
+        && data.architecture is string && data.architecture.size() >= 2 && data.architecture.size() <= 64
+        && data.trainingMode in ['beginner', 'advanced']
+        && isValidHyperparameters(data.hyperparameters)
+        && data.status in ['queued', 'running', 'paused', 'completed', 'cancelled', 'failed']
+        && data.currentEpoch is number && data.currentEpoch >= 0 && data.currentEpoch <= 200
+        && data.totalEpochs is number && data.totalEpochs >= 1 && data.totalEpochs <= 200
+        && data.epochMetrics is list && data.epochMetrics.size() <= 200
+        && (data.epochMetrics.size() == 0 || data.epochMetrics[0] is map)
+        && data.bestEpoch is number && data.bestEpoch >= 0 && data.bestEpoch <= 200
+        && data.bestValMetric is number && data.bestValMetric >= 0
+        && data.checkpointSaved is bool
+        && data.hardwareSummary is string && data.hardwareSummary.size() <= 180
+        && data.errorMessage is string && data.errorMessage.size() <= 500
+        && data.completedAt is string && data.completedAt.size() <= 64
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTrainedModel(data, modelId) {
+      return data.keys().hasAll([
+          'id', 'runId', 'projectId', 'datasetId', 'datasetVersion', 'ownerUid',
+          'name', 'taskType', 'backendEngine', 'architecture', 'license',
+          'classes', 'inputSize', 'parameterCount', 'weightSizeBytes',
+          'inferenceLatencyMs', 'accuracy', 'precision', 'recall', 'f1Score',
+          'mAP50', 'confusionLabels', 'confusionFlat', 'perClassMetrics',
+          'onDeviceCompatible', 'isActive', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'runId', 'projectId', 'datasetId', 'datasetVersion', 'ownerUid',
+          'name', 'taskType', 'backendEngine', 'architecture', 'license',
+          'classes', 'inputSize', 'parameterCount', 'weightSizeBytes',
+          'inferenceLatencyMs', 'accuracy', 'precision', 'recall', 'f1Score',
+          'mAP50', 'confusionLabels', 'confusionFlat', 'perClassMetrics',
+          'onDeviceCompatible', 'isActive', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == modelId && isValidId(data.id)
+        && data.runId is string && isValidId(data.runId)
+        && data.projectId is string && isValidId(data.projectId)
+        && data.datasetId is string && isValidId(data.datasetId)
+        && data.datasetVersion is number && data.datasetVersion >= 1 && data.datasetVersion <= 1000
+        && data.ownerUid is string && isValidId(data.ownerUid)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
+        && data.taskType in ['image_classification', 'object_detection']
+        && data.backendEngine in ['tfjs_browser', 'python_fastapi']
+        && data.architecture is string && data.architecture.size() >= 2 && data.architecture.size() <= 64
+        && data.license is string && data.license.size() >= 2 && data.license.size() <= 80
+        && data.classes is list && data.classes.size() <= 50
+        && (data.classes.size() == 0 || data.classes[0] is string)
+        && data.inputSize is number && data.inputSize >= 32 && data.inputSize <= 1024
+        && data.parameterCount is number && data.parameterCount >= 0
+        && data.weightSizeBytes is number && data.weightSizeBytes >= 0
+        && data.inferenceLatencyMs is number && data.inferenceLatencyMs >= 0
+        && data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 1
+        && data.precision is number && data.precision >= 0 && data.precision <= 1
+        && data.recall is number && data.recall >= 0 && data.recall <= 1
+        && data.f1Score is number && data.f1Score >= 0 && data.f1Score <= 1
+        && data.mAP50 is number && data.mAP50 >= 0 && data.mAP50 <= 1
+        && data.confusionLabels is list && data.confusionLabels.size() <= 50
+        && (data.confusionLabels.size() == 0 || data.confusionLabels[0] is string)
+        && data.confusionFlat is list && data.confusionFlat.size() <= 2500
+        && (data.confusionFlat.size() == 0 || data.confusionFlat[0] is number)
+        && data.perClassMetrics is list && data.perClassMetrics.size() <= 50
+        && (data.perClassMetrics.size() == 0 || data.perClassMetrics[0] is map)
+        && data.onDeviceCompatible is bool
+        && data.isActive is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidEvaluationReport(data, reportId) {
+      return data.keys().hasAll([
+          'id', 'projectId', 'modelId', 'modelName', 'datasetId', 'datasetVersion',
+          'ownerUid', 'taskType', 'split', 'sampleCount', 'confidenceThreshold',
+          'iouThreshold', 'accuracy', 'precision', 'recall', 'f1Score', 'mAP50',
+          'avgLatencyMs', 'p95LatencyMs', 'confusionLabels', 'confusionFlat',
+          'perClassMetrics', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'projectId', 'modelId', 'modelName', 'datasetId', 'datasetVersion',
+          'ownerUid', 'taskType', 'split', 'sampleCount', 'confidenceThreshold',
+          'iouThreshold', 'accuracy', 'precision', 'recall', 'f1Score', 'mAP50',
+          'avgLatencyMs', 'p95LatencyMs', 'confusionLabels', 'confusionFlat',
+          'perClassMetrics', 'createdAt'
+        ])
+        && data.id is string && data.id == reportId && isValidId(data.id)
+        && data.projectId is string && isValidId(data.projectId)
+        && data.modelId is string && isValidId(data.modelId)
+        && data.modelName is string && data.modelName.size() >= 2 && data.modelName.size() <= 120
+        && data.datasetId is string && isValidId(data.datasetId)
+        && data.datasetVersion is number && data.datasetVersion >= 1 && data.datasetVersion <= 1000
+        && data.ownerUid is string && isValidId(data.ownerUid)
+        && data.taskType in ['image_classification', 'object_detection']
+        && data.split in ['test', 'val', 'all']
+        && data.sampleCount is number && data.sampleCount >= 1 && data.sampleCount <= 50000
+        && data.confidenceThreshold is number && data.confidenceThreshold >= 0 && data.confidenceThreshold <= 1
+        && data.iouThreshold is number && data.iouThreshold >= 0 && data.iouThreshold <= 1
+        && data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 1
+        && data.precision is number && data.precision >= 0 && data.precision <= 1
+        && data.recall is number && data.recall >= 0 && data.recall <= 1
+        && data.f1Score is number && data.f1Score >= 0 && data.f1Score <= 1
+        && data.mAP50 is number && data.mAP50 >= 0 && data.mAP50 <= 1
+        && data.avgLatencyMs is number && data.avgLatencyMs >= 0
+        && data.p95LatencyMs is number && data.p95LatencyMs >= 0
+        && data.confusionLabels is list && data.confusionLabels.size() <= 50
+        && (data.confusionLabels.size() == 0 || data.confusionLabels[0] is string)
+        && data.confusionFlat is list && data.confusionFlat.size() <= 2500
+        && (data.confusionFlat.size() == 0 || data.confusionFlat[0] is number)
+        && data.perClassMetrics is list && data.perClassMetrics.size() <= 50
+        && (data.perClassMetrics.size() == 0 || data.perClassMetrics[0] is map)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidGeneratedApp(data, appId) {
+      return data.keys().hasAll([
+          'id', 'projectId', 'modelId', 'modelName', 'ownerUid', 'taskType',
+          'name', 'shortName', 'description', 'tier', 'themeColor', 'backgroundColor',
+          'runtimeTarget', 'inputSources', 'confidenceThreshold', 'iouThreshold',
+          'showConfidence', 'showLatency', 'showHistory', 'allowCsvExport',
+          'customHeaderTitle', 'alertEnabled', 'alertTargetClass', 'alertMinConfidence',
+          'status', 'version', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'projectId', 'modelId', 'modelName', 'ownerUid', 'taskType',
+          'name', 'shortName', 'description', 'tier', 'themeColor', 'backgroundColor',
+          'runtimeTarget', 'inputSources', 'confidenceThreshold', 'iouThreshold',
+          'showConfidence', 'showLatency', 'showHistory', 'allowCsvExport',
+          'customHeaderTitle', 'alertEnabled', 'alertTargetClass', 'alertMinConfidence',
+          'status', 'version', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == appId && isValidId(data.id)
+        && data.projectId is string && isValidId(data.projectId)
+        && data.modelId is string && isValidId(data.modelId)
+        && data.modelName is string && data.modelName.size() >= 2 && data.modelName.size() <= 120
+        && data.ownerUid is string && isValidId(data.ownerUid)
+        && data.taskType in ['image_classification', 'object_detection']
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 80
+        && data.shortName is string && data.shortName.size() >= 1 && data.shortName.size() <= 12
+        && data.description is string && data.description.size() <= 300
+        && data.tier in ['basic', 'custom', 'professional']
+        && data.themeColor is string && data.themeColor.size() == 7 && data.themeColor.matches('^#[0-9a-fA-F]{6}$')
+        && data.backgroundColor in ['light', 'dark']
+        && data.runtimeTarget in ['on_device_pwa', 'hybrid_cloud']
+        && data.inputSources is list && data.inputSources.size() >= 1 && data.inputSources.size() <= 3
+        && data.inputSources.hasOnly(['camera', 'upload', 'video'])
+        && data.confidenceThreshold is number && data.confidenceThreshold >= 0 && data.confidenceThreshold <= 1
+        && data.iouThreshold is number && data.iouThreshold >= 0 && data.iouThreshold <= 1
+        && data.showConfidence is bool
+        && data.showLatency is bool
+        && data.showHistory is bool
+        && data.allowCsvExport is bool
+        && data.customHeaderTitle is string && data.customHeaderTitle.size() <= 80
+        && data.alertEnabled is bool
+        && data.alertTargetClass is string && data.alertTargetClass.size() <= 80
+        && data.alertMinConfidence is number && data.alertMinConfidence >= 0 && data.alertMinConfidence <= 1
+        && data.status in ['draft', 'ready', 'published']
+        && data.version is number && data.version >= 1 && data.version <= 1000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidActivityLog(data, logId) {
+      return data.keys().hasAll([
+          'id', 'ownerUid', 'projectId', 'action', 'targetType', 'targetName', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerUid', 'projectId', 'action', 'targetType', 'targetName', 'createdAt'
+        ])
+        && data.id is string && data.id == logId && isValidId(data.id)
+        && data.ownerUid is string && isValidId(data.ownerUid)
+        && data.projectId is string && data.projectId.size() <= 128
+        && data.action in [
+          'project_created', 'project_updated', 'project_deleted',
+          'workspace_created', 'settings_updated',
+          'dataset_created', 'dataset_updated', 'dataset_exported',
+          'training_started', 'training_completed', 'training_cancelled',
+          'model_evaluated', 'model_exported', 'model_activated', 'model_deleted',
+          'app_created', 'app_updated', 'app_exported', 'app_deleted'
+        ]
+        && data.targetType in ['project', 'workspace', 'account', 'dataset', 'training_run', 'model', 'app']
+        && data.targetName is string && data.targetName.size() >= 1 && data.targetName.size() <= 120
+        && data.createdAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    // PII-Isolated User Profiles
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().planTier == 'free'
+        && incoming().storageUsedBytes == 0
+        && incoming().storageQuotaBytes == 5368709120
+        && incoming().cloudCreditsBalance == 100
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            isOwner(userId)
+            && incoming().planTier == existing().planTier
+            && incoming().storageUsedBytes == existing().storageUsedBytes
+            && incoming().storageQuotaBytes == existing().storageQuotaBytes
+            && incoming().cloudCreditsBalance == existing().cloudCreditsBalance
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName', 'preferredLocale', 'preferredTheme', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    // Workspaces
+    match /workspaces/{workspaceId} {
+      allow get: if isValidId(workspaceId) && isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(workspaceId)
+        && isValidWorkspace(incoming(), workspaceId)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(workspaceId)
+        && isValidWorkspace(incoming(), workspaceId)
+        && incoming().id == existing().id
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().ownerUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'storageProvider', 'cloudRegion', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(workspaceId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+
+      // Master Gate on Workspace Members subcollection
+      match /members/{memberUid} {
+        allow get: if isValidId(workspaceId) && isValidId(memberUid) && isSignedIn() && (
+          request.auth.uid == memberUid ||
+          get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerUid == request.auth.uid ||
+          isAdmin()
+        );
+        allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+
+        allow create: if isVerifiedUser()
+          && isValidId(workspaceId)
+          && isValidId(memberUid)
+          && isValidWorkspaceMember(incoming(), workspaceId, memberUid)
+          && incoming().addedAt == request.time
+          && exists(/databases/$(database)/documents/workspaces/$(workspaceId))
+          && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerUid == request.auth.uid;
+
+        allow update: if isVerifiedUser()
+          && isValidId(workspaceId)
+          && isValidId(memberUid)
+          && isValidWorkspaceMember(incoming(), workspaceId, memberUid)
+          && incoming().uid == existing().uid
+          && incoming().workspaceId == existing().workspaceId
+          && incoming().addedAt == existing().addedAt
+          && incoming().diff(existing()).affectedKeys().hasOnly(['role'])
+          && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerUid == request.auth.uid;
+
+        allow delete: if isVerifiedUser()
+          && isValidId(workspaceId)
+          && isValidId(memberUid)
+          && (
+            get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerUid == request.auth.uid ||
+            isAdmin()
+          );
+      }
+    }
+
+    // Computer Vision Projects
+    match /projects/{projectId} {
+      allow get: if isValidId(projectId) && isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(projectId)
+        && isValidProject(incoming(), projectId)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().status == 'draft'
+        && incoming().datasetCount == 0
+        && incoming().modelCount == 0
+        && incoming().appCount == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/workspaces/$(incoming().workspaceId))
+        && get(/databases/$(database)/documents/workspaces/$(incoming().workspaceId)).data.ownerUid == request.auth.uid;
+
+      allow update: if isVerifiedUser()
+        && isValidId(projectId)
+        && isValidProject(incoming(), projectId)
+        && incoming().id == existing().id
+        && incoming().workspaceId == existing().workspaceId
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().ownerUid == request.auth.uid
+            && (
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'name', 'description', 'trainingMode', 'storageLocation', 'cloudConsentGranted', 'updatedAt'
+              ]) ||
+              (
+                incoming().status in ['draft', 'dataset_ready'] &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'datasetCount', 'status', 'updatedAt'
+                ])
+              ) ||
+              (
+                incoming().status in ['draft', 'dataset_ready', 'training', 'trained'] &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'modelCount', 'status', 'updatedAt'
+                ])
+              ) ||
+              (
+                incoming().status in ['draft', 'dataset_ready', 'training', 'trained', 'deployed'] &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'appCount', 'status', 'updatedAt'
+                ])
+              )
+            )
+          )
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(projectId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+    }
+
+    // Phase 2: Project Datasets
+    match /datasets/{datasetId} {
+      allow get: if isValidId(datasetId) && isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(datasetId)
+        && isValidDataset(incoming(), datasetId)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().version == 1
+        && incoming().imageCount == 0
+        && incoming().annotatedCount == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/projects/$(incoming().projectId))
+        && get(/databases/$(database)/documents/projects/$(incoming().projectId)).data.ownerUid == request.auth.uid;
+
+      allow update: if isVerifiedUser()
+        && isValidId(datasetId)
+        && isValidDataset(incoming(), datasetId)
+        && incoming().id == existing().id
+        && incoming().projectId == existing().projectId
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().ownerUid == request.auth.uid
+            && (
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'name', 'description', 'classes', 'version', 'updatedAt'
+              ]) ||
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'splitTrainPct', 'splitValPct', 'splitTestPct', 'updatedAt'
+              ]) ||
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'augmentationConfig', 'updatedAt'
+              ]) ||
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'imageCount', 'annotatedCount', 'updatedAt'
+              ])
+            )
+          )
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(datasetId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+
+      // Master Gate on Dataset Items subcollection
+      match /items/{itemId} {
+        allow get: if isValidId(datasetId) && isValidId(itemId) && isSignedIn() && (
+          get(/databases/$(database)/documents/datasets/$(datasetId)).data.ownerUid == request.auth.uid ||
+          isAdmin()
+        );
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+
+        allow create: if isVerifiedUser()
+          && isValidId(datasetId)
+          && isValidId(itemId)
+          && isValidDatasetItem(incoming(), datasetId, itemId)
+          && incoming().ownerUid == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/datasets/$(datasetId))
+          && get(/databases/$(database)/documents/datasets/$(datasetId)).data.ownerUid == request.auth.uid;
+
+        allow update: if isVerifiedUser()
+          && isValidId(datasetId)
+          && isValidId(itemId)
+          && isValidDatasetItem(incoming(), datasetId, itemId)
+          && incoming().id == existing().id
+          && incoming().datasetId == existing().datasetId
+          && incoming().projectId == existing().projectId
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && get(/databases/$(database)/documents/datasets/$(datasetId)).data.ownerUid == request.auth.uid
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'classificationLabel', 'annotations', 'isApproved', 'updatedAt'
+            ]) ||
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'split', 'updatedAt'
+            ])
+          );
+
+        allow delete: if isVerifiedUser()
+          && isValidId(datasetId)
+          && isValidId(itemId)
+          && (
+            get(/databases/$(database)/documents/datasets/$(datasetId)).data.ownerUid == request.auth.uid ||
+            isAdmin()
+          );
+      }
+    }
+
+    // Phase 3: AI Training Runs
+    match /trainingRuns/{runId} {
+      allow get: if isValidId(runId) && isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(runId)
+        && isValidTrainingRun(incoming(), runId)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().status in ['queued', 'running']
+        && incoming().currentEpoch == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/projects/$(incoming().projectId))
+        && get(/databases/$(database)/documents/projects/$(incoming().projectId)).data.ownerUid == request.auth.uid
+        && exists(/databases/$(database)/documents/datasets/$(incoming().datasetId))
+        && get(/databases/$(database)/documents/datasets/$(incoming().datasetId)).data.ownerUid == request.auth.uid;
+
+      allow update: if isVerifiedUser()
+        && isValidId(runId)
+        && isValidTrainingRun(incoming(), runId)
+        && incoming().id == existing().id
+        && incoming().projectId == existing().projectId
+        && incoming().datasetId == existing().datasetId
+        && incoming().datasetVersion == existing().datasetVersion
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().taskType == existing().taskType
+        && incoming().backendEngine == existing().backendEngine
+        && incoming().architecture == existing().architecture
+        && incoming().trainingMode == existing().trainingMode
+        && incoming().hyperparameters == existing().hyperparameters
+        && incoming().totalEpochs == existing().totalEpochs
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().ownerUid == request.auth.uid
+            && !(existing().status in ['completed', 'cancelled', 'failed'])
+            && (
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'status', 'currentEpoch', 'epochMetrics', 'bestEpoch',
+                'bestValMetric', 'checkpointSaved', 'hardwareSummary',
+                'errorMessage', 'completedAt', 'updatedAt'
+              ]) ||
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'status', 'completedAt', 'updatedAt'
+              ])
+            )
+          )
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(runId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+    }
+
+    // Phase 3: Trained Models
+    match /trainedModels/{modelId} {
+      allow get: if isValidId(modelId) && isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(modelId)
+        && isValidTrainedModel(incoming(), modelId)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/projects/$(incoming().projectId))
+        && get(/databases/$(database)/documents/projects/$(incoming().projectId)).data.ownerUid == request.auth.uid
+        && exists(/databases/$(database)/documents/datasets/$(incoming().datasetId))
+        && get(/databases/$(database)/documents/datasets/$(incoming().datasetId)).data.ownerUid == request.auth.uid;
+
+      allow update: if isVerifiedUser()
+        && isValidId(modelId)
+        && isValidTrainedModel(incoming(), modelId)
+        && incoming().id == existing().id
+        && incoming().runId == existing().runId
+        && incoming().projectId == existing().projectId
+        && incoming().datasetId == existing().datasetId
+        && incoming().datasetVersion == existing().datasetVersion
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().taskType == existing().taskType
+        && incoming().backendEngine == existing().backendEngine
+        && incoming().architecture == existing().architecture
+        && incoming().license == existing().license
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().ownerUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'isActive', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(modelId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+    }
+
+    // Phase 4: Immutable Evaluation Reports
+    match /evaluationReports/{reportId} {
+      allow get: if isValidId(reportId) && isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(reportId)
+        && isValidEvaluationReport(incoming(), reportId)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && exists(/databases/$(database)/documents/projects/$(incoming().projectId))
+        && get(/databases/$(database)/documents/projects/$(incoming().projectId)).data.ownerUid == request.auth.uid
+        && exists(/databases/$(database)/documents/datasets/$(incoming().datasetId))
+        && get(/databases/$(database)/documents/datasets/$(incoming().datasetId)).data.ownerUid == request.auth.uid
+        && exists(/databases/$(database)/documents/trainedModels/$(incoming().modelId))
+        && get(/databases/$(database)/documents/trainedModels/$(incoming().modelId)).data.ownerUid == request.auth.uid;
+
+      allow update: if false;
+
+      allow delete: if isVerifiedUser()
+        && isValidId(reportId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+    }
+
+    // Phase 5: Generated Standalone PWA Applications
+    match /generatedApps/{appId} {
+      allow get: if isValidId(appId) && isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(appId)
+        && isValidGeneratedApp(incoming(), appId)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().version == 1
+        && incoming().status in ['draft', 'ready']
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/projects/$(incoming().projectId))
+        && get(/databases/$(database)/documents/projects/$(incoming().projectId)).data.ownerUid == request.auth.uid
+        && exists(/databases/$(database)/documents/trainedModels/$(incoming().modelId))
+        && get(/databases/$(database)/documents/trainedModels/$(incoming().modelId)).data.ownerUid == request.auth.uid
+        && (
+          incoming().runtimeTarget == 'hybrid_cloud' ||
+          get(/databases/$(database)/documents/trainedModels/$(incoming().modelId)).data.onDeviceCompatible == true
+        );
+
+      allow update: if isVerifiedUser()
+        && isValidId(appId)
+        && isValidGeneratedApp(incoming(), appId)
+        && incoming().id == existing().id
+        && incoming().projectId == existing().projectId
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().taskType == existing().taskType
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/trainedModels/$(incoming().modelId))
+        && get(/databases/$(database)/documents/trainedModels/$(incoming().modelId)).data.ownerUid == request.auth.uid
+        && (
+          incoming().runtimeTarget == 'hybrid_cloud' ||
+          get(/databases/$(database)/documents/trainedModels/$(incoming().modelId)).data.onDeviceCompatible == true
+        )
+        && (
+          isAdmin() ||
+          (
+            existing().ownerUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'modelId', 'modelName', 'name', 'shortName', 'description',
+              'tier', 'themeColor', 'backgroundColor', 'runtimeTarget',
+              'inputSources', 'confidenceThreshold', 'iouThreshold',
+              'showConfidence', 'showLatency', 'showHistory', 'allowCsvExport',
+              'customHeaderTitle', 'alertEnabled', 'alertTargetClass',
+              'alertMinConfidence', 'status', 'version', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(appId)
+        && (existing().ownerUid == request.auth.uid || isAdmin());
+    }
+
+    // Immutable Activity Audit Logs
+    match /activityLogs/{logId} {
+      allow get: if isValidId(logId) && isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(logId)
+        && isValidActivityLog(incoming(), logId)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time;
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Connection validation probe
+    match /test/connection {
+      allow read: if false;
+      allow write: if false;
+    }
+  }
+}

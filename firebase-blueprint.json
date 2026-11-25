@@ -1,0 +1,1083 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user account profile, locale/theme preferences, storage quota, and credit balance.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "preferredLocale": {
+          "type": "string",
+          "enum": ["en", "ar"]
+        },
+        "preferredTheme": {
+          "type": "string",
+          "enum": ["light", "dark"]
+        },
+        "planTier": {
+          "type": "string",
+          "enum": ["free", "pro", "enterprise"]
+        },
+        "storageUsedBytes": {
+          "type": "number"
+        },
+        "storageQuotaBytes": {
+          "type": "number"
+        },
+        "cloudCreditsBalance": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "email",
+        "displayName",
+        "preferredLocale",
+        "preferredTheme",
+        "planTier",
+        "storageUsedBytes",
+        "storageQuotaBytes",
+        "cloudCreditsBalance",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Workspace": {
+      "title": "Workspace",
+      "description": "Personal or Team AI workspace container with storage provider preference.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "type": {
+          "type": "string",
+          "enum": ["personal", "team"]
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "storageProvider": {
+          "type": "string",
+          "enum": ["local", "cloud"]
+        },
+        "cloudRegion": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "type",
+        "ownerUid",
+        "storageProvider",
+        "cloudRegion",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WorkspaceMember": {
+      "title": "WorkspaceMember",
+      "description": "Role-based access control membership entry for a workspace.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["owner", "admin", "trainer", "annotator", "viewer"]
+        },
+        "addedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "workspaceId", "role", "addedAt"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "Computer Vision AI project with task type, storage consent, and pipeline counters.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "taskType": {
+          "type": "string",
+          "enum": ["image_classification", "object_detection"]
+        },
+        "engineVersion": {
+          "type": "string",
+          "enum": ["v1.0"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "dataset_ready", "training", "trained", "deployed"]
+        },
+        "trainingMode": {
+          "type": "string",
+          "enum": ["beginner", "advanced"]
+        },
+        "storageLocation": {
+          "type": "string",
+          "enum": ["local", "cloud"]
+        },
+        "cloudConsentGranted": {
+          "type": "boolean"
+        },
+        "datasetCount": {
+          "type": "number"
+        },
+        "modelCount": {
+          "type": "number"
+        },
+        "appCount": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "workspaceId",
+        "ownerUid",
+        "name",
+        "description",
+        "taskType",
+        "engineVersion",
+        "status",
+        "trainingMode",
+        "storageLocation",
+        "cloudConsentGranted",
+        "datasetCount",
+        "modelCount",
+        "appCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Dataset": {
+      "title": "Dataset",
+      "description": "Versioned dataset container with classes, train/val/test split ratios, and leakage-safe augmentation settings.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "version": {
+          "type": "number"
+        },
+        "classes": {
+          "type": "array"
+        },
+        "splitTrainPct": {
+          "type": "number"
+        },
+        "splitValPct": {
+          "type": "number"
+        },
+        "splitTestPct": {
+          "type": "number"
+        },
+        "augmentationConfig": {
+          "type": "object"
+        },
+        "imageCount": {
+          "type": "number"
+        },
+        "annotatedCount": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "ownerUid",
+        "name",
+        "description",
+        "version",
+        "classes",
+        "splitTrainPct",
+        "splitValPct",
+        "splitTestPct",
+        "augmentationConfig",
+        "imageCount",
+        "annotatedCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DatasetItem": {
+      "title": "DatasetItem",
+      "description": "Metadata, hash, quality metrics, split assignment, and annotations for a dataset image stored locally in IndexedDB or synced storage.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "datasetId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 180
+        },
+        "mimeType": {
+          "type": "string",
+          "enum": ["image/jpeg", "image/png", "image/webp"]
+        },
+        "width": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        },
+        "sizeBytes": {
+          "type": "number"
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "sourceType": {
+          "type": "string",
+          "enum": ["upload", "camera", "video_frame", "import_yolo", "import_coco"]
+        },
+        "split": {
+          "type": "string",
+          "enum": ["train", "val", "test"]
+        },
+        "classificationLabel": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "annotations": {
+          "type": "array"
+        },
+        "blurScore": {
+          "type": "number"
+        },
+        "isApproved": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "datasetId",
+        "projectId",
+        "ownerUid",
+        "filename",
+        "mimeType",
+        "width",
+        "height",
+        "sizeBytes",
+        "sha256",
+        "sourceType",
+        "split",
+        "classificationLabel",
+        "annotations",
+        "blurScore",
+        "isApproved",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Immutable audit log entry recording user actions on workspaces, projects, and datasets.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "project_created",
+            "project_updated",
+            "project_deleted",
+            "workspace_created",
+            "settings_updated",
+            "dataset_created",
+            "dataset_updated",
+            "dataset_exported",
+            "training_started",
+            "training_completed",
+            "training_cancelled",
+            "model_evaluated",
+            "model_exported",
+            "model_activated",
+            "model_deleted",
+            "app_created",
+            "app_updated",
+            "app_exported",
+            "app_deleted"
+          ]
+        },
+        "targetType": {
+          "type": "string",
+          "enum": ["project", "workspace", "account", "dataset", "training_run", "model", "app"]
+        },
+        "targetName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerUid",
+        "projectId",
+        "action",
+        "targetType",
+        "targetName",
+        "createdAt"
+      ]
+    },
+    "TrainingRun": {
+      "title": "TrainingRun",
+      "description": "Real AI training run configuration, status, live epoch history, and checkpoint tracking.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "datasetId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "datasetVersion": {
+          "type": "number"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "taskType": {
+          "type": "string",
+          "enum": ["image_classification", "object_detection"]
+        },
+        "backendEngine": {
+          "type": "string",
+          "enum": ["tfjs_browser", "python_fastapi"]
+        },
+        "architecture": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "trainingMode": {
+          "type": "string",
+          "enum": ["beginner", "advanced"]
+        },
+        "hyperparameters": {
+          "type": "object"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["queued", "running", "paused", "completed", "cancelled", "failed"]
+        },
+        "currentEpoch": {
+          "type": "number"
+        },
+        "totalEpochs": {
+          "type": "number"
+        },
+        "epochMetrics": {
+          "type": "array"
+        },
+        "bestEpoch": {
+          "type": "number"
+        },
+        "bestValMetric": {
+          "type": "number"
+        },
+        "checkpointSaved": {
+          "type": "boolean"
+        },
+        "hardwareSummary": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "errorMessage": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "completedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "datasetId",
+        "datasetVersion",
+        "ownerUid",
+        "taskType",
+        "backendEngine",
+        "architecture",
+        "trainingMode",
+        "hyperparameters",
+        "status",
+        "currentEpoch",
+        "totalEpochs",
+        "epochMetrics",
+        "bestEpoch",
+        "bestValMetric",
+        "checkpointSaved",
+        "hardwareSummary",
+        "errorMessage",
+        "completedAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TrainedModel": {
+      "title": "TrainedModel",
+      "description": "Trained Computer Vision model metadata, evaluation metrics, confusion matrix, and runtime compatibility.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "datasetId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "datasetVersion": {
+          "type": "number"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "taskType": {
+          "type": "string",
+          "enum": ["image_classification", "object_detection"]
+        },
+        "backendEngine": {
+          "type": "string",
+          "enum": ["tfjs_browser", "python_fastapi"]
+        },
+        "architecture": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "license": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "classes": {
+          "type": "array"
+        },
+        "inputSize": {
+          "type": "number"
+        },
+        "parameterCount": {
+          "type": "number"
+        },
+        "weightSizeBytes": {
+          "type": "number"
+        },
+        "inferenceLatencyMs": {
+          "type": "number"
+        },
+        "accuracy": {
+          "type": "number"
+        },
+        "precision": {
+          "type": "number"
+        },
+        "recall": {
+          "type": "number"
+        },
+        "f1Score": {
+          "type": "number"
+        },
+        "mAP50": {
+          "type": "number"
+        },
+        "confusionLabels": {
+          "type": "array"
+        },
+        "confusionFlat": {
+          "type": "array"
+        },
+        "perClassMetrics": {
+          "type": "array"
+        },
+        "onDeviceCompatible": {
+          "type": "boolean"
+        },
+        "isActive": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "runId",
+        "projectId",
+        "datasetId",
+        "datasetVersion",
+        "ownerUid",
+        "name",
+        "taskType",
+        "backendEngine",
+        "architecture",
+        "license",
+        "classes",
+        "inputSize",
+        "parameterCount",
+        "weightSizeBytes",
+        "inferenceLatencyMs",
+        "accuracy",
+        "precision",
+        "recall",
+        "f1Score",
+        "mAP50",
+        "confusionLabels",
+        "confusionFlat",
+        "perClassMetrics",
+        "onDeviceCompatible",
+        "isActive",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "EvaluationReport": {
+      "title": "EvaluationReport",
+      "description": "Immutable test/validation batch evaluation snapshot with latency distribution, confusion matrix, and per-class precision/recall/F1.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "modelId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "modelName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "datasetId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "datasetVersion": {
+          "type": "number"
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "taskType": {
+          "type": "string",
+          "enum": ["image_classification", "object_detection"]
+        },
+        "split": {
+          "type": "string",
+          "enum": ["test", "val", "all"]
+        },
+        "sampleCount": {
+          "type": "number"
+        },
+        "confidenceThreshold": {
+          "type": "number"
+        },
+        "iouThreshold": {
+          "type": "number"
+        },
+        "accuracy": {
+          "type": "number"
+        },
+        "precision": {
+          "type": "number"
+        },
+        "recall": {
+          "type": "number"
+        },
+        "f1Score": {
+          "type": "number"
+        },
+        "mAP50": {
+          "type": "number"
+        },
+        "avgLatencyMs": {
+          "type": "number"
+        },
+        "p95LatencyMs": {
+          "type": "number"
+        },
+        "confusionLabels": {
+          "type": "array"
+        },
+        "confusionFlat": {
+          "type": "array"
+        },
+        "perClassMetrics": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "modelId",
+        "modelName",
+        "datasetId",
+        "datasetVersion",
+        "ownerUid",
+        "taskType",
+        "split",
+        "sampleCount",
+        "confidenceThreshold",
+        "iouThreshold",
+        "accuracy",
+        "precision",
+        "recall",
+        "f1Score",
+        "mAP50",
+        "avgLatencyMs",
+        "p95LatencyMs",
+        "confusionLabels",
+        "confusionFlat",
+        "perClassMetrics",
+        "createdAt"
+      ]
+    },
+    "GeneratedApp": {
+      "title": "GeneratedApp",
+      "description": "Installable standalone PWA vision application configuration linked to a project and trained model.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "modelId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "modelName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "taskType": {
+          "type": "string",
+          "enum": ["image_classification", "object_detection"]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "shortName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 12
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "tier": {
+          "type": "string",
+          "enum": ["basic", "custom", "professional"]
+        },
+        "themeColor": {
+          "type": "string",
+          "minLength": 7,
+          "maxLength": 7,
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "backgroundColor": {
+          "type": "string",
+          "enum": ["light", "dark"]
+        },
+        "runtimeTarget": {
+          "type": "string",
+          "enum": ["on_device_pwa", "hybrid_cloud"]
+        },
+        "inputSources": {
+          "type": "array"
+        },
+        "confidenceThreshold": {
+          "type": "number"
+        },
+        "iouThreshold": {
+          "type": "number"
+        },
+        "showConfidence": {
+          "type": "boolean"
+        },
+        "showLatency": {
+          "type": "boolean"
+        },
+        "showHistory": {
+          "type": "boolean"
+        },
+        "allowCsvExport": {
+          "type": "boolean"
+        },
+        "customHeaderTitle": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "alertEnabled": {
+          "type": "boolean"
+        },
+        "alertTargetClass": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "alertMinConfidence": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "ready", "published"]
+        },
+        "version": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "modelId",
+        "modelName",
+        "ownerUid",
+        "taskType",
+        "name",
+        "shortName",
+        "description",
+        "tier",
+        "themeColor",
+        "backgroundColor",
+        "runtimeTarget",
+        "inputSources",
+        "confidenceThreshold",
+        "iouThreshold",
+        "showConfidence",
+        "showLatency",
+        "showHistory",
+        "allowCsvExport",
+        "customHeaderTitle",
+        "alertEnabled",
+        "alertTargetClass",
+        "alertMinConfidence",
+        "status",
+        "version",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile and preferences isolated strictly to the owning user."
+    },
+    "/workspaces/{workspaceId}": {
+      "schema": { "$ref": "#/entities/Workspace" },
+      "description": "Personal and team workspaces owned by authenticated users."
+    },
+    "/workspaces/{workspaceId}/members/{memberUid}": {
+      "schema": { "$ref": "#/entities/WorkspaceMember" },
+      "description": "Workspace RBAC membership documents controlled by the workspace owner."
+    },
+    "/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/Project" },
+      "description": "Computer Vision projects belonging to a workspace and user."
+    },
+    "/datasets/{datasetId}": {
+      "schema": { "$ref": "#/entities/Dataset" },
+      "description": "Project datasets containing classes, split ratios, and augmentation configurations."
+    },
+    "/datasets/{datasetId}/items/{itemId}": {
+      "schema": { "$ref": "#/entities/DatasetItem" },
+      "description": "Individual dataset image metadata, hashes, split assignment, and bounding-box/class annotations."
+    },
+    "/trainingRuns/{runId}": {
+      "schema": { "$ref": "#/entities/TrainingRun" },
+      "description": "AI model training job configurations, status, and epoch metric history."
+    },
+    "/trainedModels/{modelId}": {
+      "schema": { "$ref": "#/entities/TrainedModel" },
+      "description": "Trained model evaluation summaries, confusion matrices, and runtime compatibility metadata."
+    },
+    "/evaluationReports/{reportId}": {
+      "schema": { "$ref": "#/entities/EvaluationReport" },
+      "description": "Immutable evaluation snapshots recording test-split benchmarks and confusion matrices."
+    },
+    "/generatedApps/{appId}": {
+      "schema": { "$ref": "#/entities/GeneratedApp" },
+      "description": "User-built standalone Vision PWA configurations generated in MK App Builder."
+    },
+    "/activityLogs/{logId}": {
+      "schema": { "$ref": "#/entities/ActivityLog" },
+      "description": "Append-only user activity audit log entries."
+    }
+  }
+}
