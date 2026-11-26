@@ -1,0 +1,52 @@
+name: Build MK AI Desktop (Windows)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'desktop-v*'
+
+jobs:
+  build-windows-installers:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Node dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Run Desktop & Model Hub unit tests
+        run: npm test
+
+      - name: Build Renderer & Electron Main bundles
+        run: npm run desktop:build
+
+      - name: Stage Online Embeddable Python Runtime
+        run: node build/prepare-python-runtime.mjs
+
+      - name: Build Online Installer (MK-AI-Setup.exe)
+        run: npx electron-builder --config electron-builder.yml --win nsis
+
+      - name: Stage Offline Wheelhouse
+        run: node build/prepare-python-runtime.mjs --offline
+
+      - name: Build Offline Installer (MK-AI-Offline-Setup.exe)
+        env:
+          OFFLINE_INSTALLER: '1'
+        run: npx electron-builder --config electron-builder.yml --win nsis -c.win.artifactName=MK-AI-Offline-Setup.exe
+
+      - name: Upload Windows Installer Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mk-ai-desktop-windows-installers
+          path: |
+            release/MK-AI-Setup.exe
+            release/MK-AI-Offline-Setup.exe
+          retention-days: 30

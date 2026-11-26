@@ -1,0 +1,43 @@
+appId: com.mktech.mkai.desktop
+productName: MK AI Desktop
+copyright: Copyright © 2026 MK Tech
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+extraResources:
+  - from: ai_engine
+    to: ai_engine
+    filter:
+      - '**/*'
+      - '!__pycache__/**'
+      - '!*.pyc'
+      - '!.mk_jobs/**'
+  - from: build/python-bundle
+    to: python-bundle
+    filter:
+      - '**/*'
+  - from: build/wheelhouse
+    to: wheelhouse
+    filter:
+      - '**/*'
+asar: true
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: MK-AI-Setup.exe
+  requestedExecutionLevel: asInvoker
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: MK AI Desktop
+  include: build/installer.nsh
+  deleteAppDataOnUninstall: false

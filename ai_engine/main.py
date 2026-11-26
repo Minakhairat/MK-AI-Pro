@@ -9,18 +9,21 @@ No simulated training or fabricated metrics are permitted.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import platform
 import re
+import secrets
+import shutil
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 try:
@@ -40,8 +43,10 @@ except ImportError:
 
 try:
     from ultralytics import YOLO  # type: ignore
+    import ultralytics as ultralytics_pkg  # type: ignore
 except ImportError:
     YOLO = None  # type: ignore
+    ultralytics_pkg = None  # type: ignore
 
 try:
     import timm  # type: ignore
@@ -68,16 +73,45 @@ try:
 except ImportError:
     paddleocr = None  # type: ignore
 
+ENGINE_VERSION = "2.1.0-desktop"
 app = FastAPI(
     title="MK AI Training Engine",
     description="Computer Vision AI Training & Inference Service by MK Tech",
-    version="2.0.0-modelhub",
+    version=ENGINE_VERSION,
 )
 
 START_TIME = time.time()
-CHECKPOINT_ROOT = Path(os.environ.get("MK_CHECKPOINT_DIR", "./checkpoints")).resolve()
+LOCAL_STORAGE_ROOT = Path(os.environ.get("LOCAL_STORAGE_DIR", "./.mk_ai_storage")).resolve()
+CHECKPOINT_ROOT = Path(
+    os.environ.get("MK_CHECKPOINT_DIR", str(LOCAL_STORAGE_ROOT / "training_runs"))
+).resolve()
+WEIGHTS_ROOT = Path(
+    os.environ.get("MK_WEIGHTS_DIR", str(LOCAL_STORAGE_ROOT / "model_weights"))
+).resolve()
 CHECKPOINT_ROOT.mkdir(parents=True, exist_ok=True)
+WEIGHTS_ROOT.mkdir(parents=True, exist_ok=True)
 JOB_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
+ENGINE_TOKEN = os.environ.get("MK_ENGINE_TOKEN", "").strip()
+ALLOWED_LOCAL_ORIGIN_RE = re.compile(
+    r"^(https?://(127\.0\.0\.1|localhost)(:\d+)?|file://|app://.*|null)$", re.IGNORECASE
+)
+
+
+@app.middleware("http")
+async def local_security_middleware(request: Request, call_next: Any):
+    origin = request.headers.get("origin")
+    if origin and not ALLOWED_LOCAL_ORIGIN_RE.match(origin.strip()):
+        return JSONResponse(status_code=403, content={"detail": "Disallowed origin for local AI Engine."})
+
+    if ENGINE_TOKEN and request.url.path != "/health":
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return JSONResponse(status_code=401, content={"detail": "Missing local engine bearer token."})
+        provided = auth_header[7:].strip()
+        if not secrets.compare_digest(provided, ENGINE_TOKEN):
+            return JSONResponse(status_code=401, content={"detail": "Invalid local engine bearer token."})
+
+    return await call_next(request)
 
 TIMM_MODEL_MAP = {
     "convnextv2_tiny": "convnextv2_tiny.fcmae_ft_in1k",
@@ -92,19 +126,30 @@ class HardwareStatus(BaseModel):
     cpu_count: int
     architecture: str
     os_name: str
+    os_release: str
+    python_version: str
     torch_installed: bool
     torch_version: Optional[str]
     torchvision_installed: bool
+    torchvision_version: Optional[str]
     ultralytics_installed: bool
+    ultralytics_version: Optional[str]
     timm_installed: bool
+    timm_version: Optional[str]
     transformers_installed: bool
     onnx_installed: bool
     onnxruntime_installed: bool
+    onnxruntime_version: Optional[str]
     paddleocr_installed: bool
     cuda_available: bool
+    cuda_version: Optional[str]
     cuda_device_count: int
     cuda_devices: List[str]
+    cuda_vram_total_mb: int
+    cuda_vram_free_mb: int
     mps_available: bool
+    disk_free_gb: float
+    execution_profile: Literal["nvidia_gpu", "cpu", "safe_compatibility"]
 
 
 class HyperparametersPayload(BaseModel):
@@ -127,6 +172,7 @@ class TrainJobRequest(BaseModel):
     classes: List[str] = Field(min_length=1, max_length=50)
     datasetYamlPath: Optional[str] = Field(default=None, max_length=500)
     datasetDirPath: Optional[str] = Field(default=None, max_length=500)
+    preferredDevice: Literal["auto", "cpu", "cuda:0"] = "auto"
     hyperparameters: HyperparametersPayload = Field(default_factory=HyperparametersPayload)
     fineTuningStrategy: Literal["frozen_head", "partial_finetune", "full_finetune"] = "frozen_head"
     scheduler: Literal["none", "cosine", "step"] = "cosine"
@@ -134,6 +180,11 @@ class TrainJobRequest(BaseModel):
     multiLabel: bool = False
     exportOnnx: bool = False
     resumeCheckpointPath: Optional[str] = Field(default=None, max_length=500)
+
+
+class VerifyStepRequest(BaseModel):
+    check: Literal["pytorch", "yolo", "onnx"] = "pytorch"
+    preferredDevice: Literal["auto", "cpu", "cuda:0"] = "auto"
 
 
 class JobState:
@@ -178,40 +229,79 @@ JOBS: Dict[str, JobState] = {}
 
 def detect_hardware() -> HardwareStatus:
     cuda_available = False
+    cuda_version = None
     cuda_device_count = 0
     cuda_devices: List[str] = []
+    cuda_vram_total_mb = 0
+    cuda_vram_free_mb = 0
     mps_available = False
     torch_version = None
 
     if torch is not None:
         torch_version = str(torch.__version__)
+        cuda_version = getattr(torch.version, "cuda", None)
         cuda_available = bool(torch.cuda.is_available())
         if cuda_available:
             cuda_device_count = int(torch.cuda.device_count())
             cuda_devices = [
                 str(torch.cuda.get_device_name(i)) for i in range(cuda_device_count)
             ]
+            try:
+                free_b, total_b = torch.cuda.mem_get_info(0)
+                cuda_vram_free_mb = int(free_b // (1024 * 1024))
+                cuda_vram_total_mb = int(total_b // (1024 * 1024))
+            except Exception:
+                try:
+                    props = torch.cuda.get_device_properties(0)
+                    cuda_vram_total_mb = int(getattr(props, "total_memory", 0) // (1024 * 1024))
+                except Exception:
+                    pass
         mps_backend = getattr(torch.backends, "mps", None)
         if mps_backend is not None:
             mps_available = bool(mps_backend.is_available())
+
+    try:
+        disk_usage = shutil.disk_usage(CHECKPOINT_ROOT)
+        disk_free_gb = round(disk_usage.free / (1024 ** 3), 2)
+    except Exception:
+        disk_free_gb = 0.0
+
+    profile: Literal["nvidia_gpu", "cpu", "safe_compatibility"] = (
+        "nvidia_gpu"
+        if cuda_available
+        else "cpu"
+        if torch is not None
+        else "safe_compatibility"
+    )
 
     return HardwareStatus(
         cpu_count=os.cpu_count() or 1,
         architecture=platform.machine(),
         os_name=platform.system(),
+        os_release=platform.release(),
+        python_version=platform.python_version(),
         torch_installed=torch is not None,
         torch_version=torch_version,
         torchvision_installed=torchvision is not None,
+        torchvision_version=str(getattr(torchvision, "__version__", "")) or None if torchvision is not None else None,
         ultralytics_installed=YOLO is not None,
+        ultralytics_version=str(getattr(ultralytics_pkg, "__version__", "")) or None if ultralytics_pkg is not None else None,
         timm_installed=timm is not None,
+        timm_version=str(getattr(timm, "__version__", "")) or None if timm is not None else None,
         transformers_installed=transformers is not None,
         onnx_installed=onnx is not None,
         onnxruntime_installed=onnxruntime is not None,
+        onnxruntime_version=str(getattr(onnxruntime, "__version__", "")) or None if onnxruntime is not None else None,
         paddleocr_installed=paddleocr is not None,
         cuda_available=cuda_available,
+        cuda_version=str(cuda_version) if cuda_version else None,
         cuda_device_count=cuda_device_count,
         cuda_devices=cuda_devices,
+        cuda_vram_total_mb=cuda_vram_total_mb,
+        cuda_vram_free_mb=cuda_vram_free_mb,
         mps_available=mps_available,
+        disk_free_gb=disk_free_gb,
+        execution_profile=profile,
     )
 
 
@@ -309,7 +399,14 @@ def _run_python_training_worker(job: JobState) -> None:
 
         from torchvision import datasets, models, transforms  # type: ignore
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if job.req.preferredDevice == "cpu":
+            device = torch.device("cpu")
+        elif job.req.preferredDevice == "cuda:0":
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA GPU selected manually but torch.cuda.is_available() is False.")
+            device = torch.device("cuda:0")
+        else:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         img_sz = job.req.hyperparameters.inputSize
         tf_train = transforms.Compose([
             transforms.Resize((img_sz, img_sz)),
@@ -538,15 +635,101 @@ def _run_python_training_worker(job: JobState) -> None:
 
 
 @app.get("/health")
-def health() -> Dict[str, Any]:
+def health(request: Request) -> Dict[str, Any]:
+    authorized = not ENGINE_TOKEN
+    if ENGINE_TOKEN:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            authorized = secrets.compare_digest(auth_header[7:].strip(), ENGINE_TOKEN)
+
+    if not authorized:
+        return {
+            "status": "online",
+            "service": "mk-ai-training-engine",
+            "version": ENGINE_VERSION,
+            "token_protected": True,
+            "uptime_seconds": round(time.time() - START_TIME, 2),
+        }
+
     hw = detect_hardware()
     return {
         "status": "online",
         "service": "mk-ai-training-engine",
-        "phase": "v2_model_hub",
+        "version": ENGINE_VERSION,
+        "phase": "v2_desktop_ready",
+        "token_protected": bool(ENGINE_TOKEN),
         "uptime_seconds": round(time.time() - START_TIME, 2),
         "hardware": hw.model_dump(),
     }
+
+
+@app.post("/diagnostics/verify")
+def diagnostics_verify(req: VerifyStepRequest) -> Dict[str, Any]:
+    t0 = time.time()
+    if req.check == "pytorch":
+        if torch is None or nn is None:
+            raise HTTPException(status_code=503, detail="PyTorch is not installed in this Python runtime.")
+        if req.preferredDevice == "cuda:0" and not torch.cuda.is_available():
+            raise HTTPException(status_code=400, detail="CUDA requested but unavailable in PyTorch.")
+        dev = (
+            torch.device("cpu")
+            if req.preferredDevice == "cpu"
+            else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        layer = nn.Linear(8, 2).to(dev)
+        x = torch.randn(4, 8, device=dev)
+        out = layer(x)
+        loss = out.pow(2).mean()
+        loss.backward()
+        grad_ok = layer.weight.grad is not None and float(layer.weight.grad.abs().sum().item()) > 0
+        return {
+            "passed": bool(grad_ok),
+            "check": "pytorch",
+            "device": str(dev),
+            "torch_version": str(torch.__version__),
+            "cuda_available": bool(torch.cuda.is_available()),
+            "duration_ms": round((time.time() - t0) * 1000, 2),
+        }
+
+    if req.check == "yolo":
+        if YOLO is None:
+            raise HTTPException(status_code=503, detail="Ultralytics YOLO runtime is not installed.")
+        version = str(getattr(ultralytics_pkg, "__version__", "unknown"))
+        return {
+            "passed": True,
+            "check": "yolo",
+            "ultralytics_version": version,
+            "duration_ms": round((time.time() - t0) * 1000, 2),
+        }
+
+    if onnxruntime is None:
+        raise HTTPException(status_code=503, detail="ONNX Runtime is not installed.")
+    return {
+        "passed": True,
+        "check": "onnx",
+        "onnxruntime_version": str(getattr(onnxruntime, "__version__", "unknown")),
+        "providers": list(onnxruntime.get_available_providers()),
+        "duration_ms": round((time.time() - t0) * 1000, 2),
+    }
+
+
+@app.get("/weights")
+def list_local_weights() -> Dict[str, Any]:
+    entries: List[Dict[str, Any]] = []
+    if WEIGHTS_ROOT.exists():
+        for p in sorted(WEIGHTS_ROOT.iterdir()):
+            if p.is_file() and p.suffix.lower() in (".pt", ".pth", ".onnx", ".safetensors", ".bin"):
+                h = hashlib.sha256()
+                with p.open("rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        h.update(chunk)
+                entries.append({
+                    "filename": p.name,
+                    "sizeBytes": p.stat().st_size,
+                    "sha256": h.hexdigest(),
+                    "path": str(p),
+                })
+    return {"weightsDir": str(WEIGHTS_ROOT), "weights": entries}
 
 
 @app.get("/capabilities")
@@ -570,8 +753,8 @@ def capabilities() -> Dict[str, Any]:
         supported_architectures.append("paddleocr_v4")
 
     return {
-        "engine_version": "v2.0",
-        "phase": "v2_model_hub",
+        "engine_version": ENGINE_VERSION,
+        "phase": "v2_desktop_ready",
         "torch_ready": torch_ready,
         "yolo_ready": yolo_ready,
         "timm_ready": timm_ready,

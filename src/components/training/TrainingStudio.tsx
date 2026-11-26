@@ -23,6 +23,12 @@ import {
   startPythonTrainingJob,
 } from '../../lib/apiClient';
 import {
+  getDesktopBridge,
+  isDesktopApp,
+  stageDatasetItemsFromIndexedDb,
+} from '../../lib/desktopClient';
+import { evaluateModelHardwareCompatibility } from '../../lib/hardwareCompatibility';
+import {
   exportStoredModelArtifacts,
   loadTfModelFromIndexedDb,
 } from '../../lib/localModelStore';
@@ -77,6 +83,7 @@ import type {
   TrainingMode,
   TrainingRun,
 } from '../../types/domain';
+import type { ExecutionTarget, HardwareReport } from '../../types/desktop';
 
 interface TrainingStudioProps {
   project: Project;
@@ -268,8 +275,11 @@ export function TrainingStudio({
   const [downloadingCkpt, setDownloadingCkpt] = useState(false);
   const [ckptStatusMsg, setCkptStatusMsg] = useState<string | null>(null);
 
-  // Cloud/External Worker preflight cost gate
+  // Cloud/External Worker preflight cost gate & Execution Target routing
   const [showCostGate, setShowCostGate] = useState(false);
+  const desktopMode = isDesktopApp();
+  const [executionTarget, setExecutionTarget] = useState<ExecutionTarget>('browser_tfjs');
+  const [desktopHardware, setDesktopHardware] = useState<HardwareReport | null>(null);
 
   useEffect(() => {
     if (initialArchId && taskArchitectures.some((a) => a.id === initialArchId)) {
@@ -304,7 +314,12 @@ export function TrainingStudio({
     if (selectedArch.pretrainedAvailable) {
       setHp((prev) => ({ ...prev, inputSize: selectedArch.recommendedInputSize }));
     }
-  }, [selectedArch?.id]);
+    if (selectedArch.backendEngine === 'tfjs_browser') {
+      setExecutionTarget('browser_tfjs');
+    } else {
+      setExecutionTarget(desktopMode ? 'desktop_python' : 'cloud_python');
+    }
+  }, [selectedArch?.id, desktopMode]);
 
   useEffect(() => {
     if (mode === 'beginner') {
@@ -394,12 +409,24 @@ export function TrainingStudio({
     void fetchAiEngineCapabilities()
       .then((caps) => setWorkerCaps(caps))
       .catch(() => {});
+    const bridge = getDesktopBridge();
+    if (bridge) {
+      void bridge
+        .detectHardware(false)
+        .then((hw) => setDesktopHardware(hw))
+        .catch(() => {});
+    }
   }, []);
 
   const workerCompatibility = useMemo(() => {
     if (!selectedArch) return { compatible: true, missingPackages: [], reason: '' };
     return checkWorkerCompatibility(selectedArch, workerCaps);
   }, [selectedArch, workerCaps]);
+
+  const desktopHardwareCompatibility = useMemo(() => {
+    if (!selectedArch) return null;
+    return evaluateModelHardwareCompatibility(selectedArch, desktopHardware, []);
+  }, [selectedArch, desktopHardware]);
 
   // Dataset Readiness & Blob Verification
   const [availableBlobIds, setAvailableBlobIds] = useState<Set<string> | undefined>(undefined);
@@ -526,12 +553,31 @@ export function TrainingStudio({
       setTrainError(t.trainingStudio.inferenceOnlyBlockedBadge);
       return;
     }
-    if (selectedArch.backendEngine === 'python_fastapi') {
+
+    if (executionTarget === 'desktop_python' && !desktopMode) {
+      setTrainError(t.trainingStudio.execTargetWebDesktopHint);
+      return;
+    }
+
+    const usePythonEngine =
+      selectedArch.backendEngine === 'python_fastapi' ||
+      executionTarget === 'desktop_python' ||
+      executionTarget === 'cloud_python';
+
+    if (usePythonEngine) {
+      if (executionTarget === 'desktop_python' && desktopHardwareCompatibility && !desktopHardwareCompatibility.compatible) {
+        setTrainError(
+          (locale === 'ar'
+            ? desktopHardwareCompatibility.warningsAr
+            : desktopHardwareCompatibility.warningsEn)[0] || 'Incompatible Desktop hardware.'
+        );
+        return;
+      }
       if (!workerCompatibility.compatible) {
         setTrainError(workerCompatibility.reason);
         return;
       }
-      if (!costApproved) {
+      if (executionTarget === 'cloud_python' && !costApproved) {
         setShowCostGate(true);
         return;
       }
@@ -554,8 +600,12 @@ export function TrainingStudio({
     setPythonJobId(null);
 
     try {
-      if (selectedArch.backendEngine === 'python_fastapi') {
-        setLiveHardware('Python FastAPI Worker');
+      if (usePythonEngine) {
+        const hwLabel =
+          executionTarget === 'desktop_python'
+            ? `MK AI Desktop (${desktopHardware?.pytorchCudaAvailable ? desktopHardware.nvidiaGpuName || 'CUDA GPU' : 'Local Python CPU'})`
+            : 'Python FastAPI Worker';
+        setLiveHardware(hwLabel);
         await createTrainingRun({
           runId,
           ownerUid: project.ownerUid,
@@ -567,9 +617,23 @@ export function TrainingStudio({
           architecture: selectedArch.id,
           trainingMode: mode,
           hyperparameters: hp,
-          hardwareSummary: 'Python FastAPI Worker',
+          hardwareSummary: hwLabel,
           currentModelCount: trainedModels.length,
         });
+
+        let stagedDatasetDirPath: string | null = null;
+        let stagedDatasetYamlPath: string | null = null;
+        if (executionTarget === 'desktop_python' && desktopMode) {
+          appendLog(t.trainingStudio.execTargetStagingHint);
+          const staged = await stageDatasetItemsFromIndexedDb({
+            dataset: activeDataset,
+            items,
+            taskType: project.taskType,
+          });
+          stagedDatasetDirPath = staged.datasetDirPath;
+          stagedDatasetYamlPath = staged.datasetYamlPath;
+          appendLog(`Staged ${staged.stagedCount} media items to ${staged.datasetDirPath}`);
+        }
 
         appendLog(`Dispatching job to Python AI Engine (${selectedArch.name})...`);
         const pyJob = await startPythonTrainingJob({
@@ -584,6 +648,8 @@ export function TrainingStudio({
           weightDecay,
           multiLabel,
           exportOnnx,
+          datasetDirPath: stagedDatasetDirPath,
+          datasetYamlPath: stagedDatasetYamlPath,
         });
         setPythonJobId(pyJob.job_id);
         appendLog(`Python worker accepted job ${pyJob.job_id}`);
@@ -1121,6 +1187,71 @@ export function TrainingStudio({
           </div>
         </div>
 
+        {/* Execution Target Routing (Browser TF.js | Desktop Local Python | Cloud Python) */}
+        <div className="border border-zinc-200 dark:border-zinc-800 rounded-lg p-4 bg-white dark:bg-zinc-900 space-y-2.5 text-xs">
+          <label className="block font-semibold text-zinc-900 dark:text-zinc-100">
+            {t.trainingStudio.execTargetLabel}
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {(
+              [
+                {
+                  id: 'browser_tfjs' as const,
+                  label: t.trainingStudio.execTargetBrowser,
+                  disabled: selectedArch?.backendEngine === 'python_fastapi',
+                },
+                {
+                  id: 'desktop_python' as const,
+                  label: t.trainingStudio.execTargetDesktop,
+                  disabled: selectedArch?.backendEngine === 'tfjs_browser',
+                },
+                {
+                  id: 'cloud_python' as const,
+                  label: t.trainingStudio.execTargetCloud,
+                  disabled: selectedArch?.backendEngine === 'tfjs_browser',
+                },
+              ]
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                disabled={isTraining || opt.disabled}
+                onClick={() => setExecutionTarget(opt.id)}
+                className={`px-3 py-2 rounded-lg border text-start font-medium transition-colors disabled:opacity-45 ${
+                  executionTarget === opt.id
+                    ? 'border-red-600 bg-red-50/40 dark:bg-red-950/20 text-zinc-900 dark:text-zinc-100'
+                    : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-950'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {executionTarget === 'desktop_python' && !desktopMode && (
+            <p className="text-amber-700 dark:text-amber-400">
+              {t.trainingStudio.execTargetWebDesktopHint}
+            </p>
+          )}
+          {executionTarget === 'desktop_python' &&
+            desktopMode &&
+            desktopHardwareCompatibility &&
+            (locale === 'ar'
+              ? desktopHardwareCompatibility.warningsAr
+              : desktopHardwareCompatibility.warningsEn
+            ).map((warn, i) => (
+              <p
+                key={i}
+                className={
+                  desktopHardwareCompatibility.severity === 'blocked'
+                    ? 'text-red-700 dark:text-red-400'
+                    : 'text-amber-700 dark:text-amber-400'
+                }
+              >
+                {warn}
+              </p>
+            ))}
+        </div>
+
         {/* Selected Architecture Details, Pretrained Checkpoint Cache & Runtime Status */}
         {selectedArch && (
           <div className="border border-zinc-200 dark:border-zinc-800 rounded-lg p-4 bg-zinc-50 dark:bg-zinc-950 space-y-2.5 text-xs">
@@ -1562,6 +1693,9 @@ export function TrainingStudio({
                 disabled={
                   !readiness.ready ||
                   !selectedArch?.capabilities.training ||
+                  (executionTarget === 'desktop_python' && !desktopMode) ||
+                  (executionTarget === 'desktop_python' &&
+                    desktopHardwareCompatibility?.compatible === false) ||
                   (selectedArch?.backendEngine === 'python_fastapi' &&
                     !workerCompatibility.compatible)
                 }

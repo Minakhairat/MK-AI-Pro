@@ -33,6 +33,7 @@ export type AppSection =
   | 'dashboard'
   | 'projects'
   | 'model_hub'
+  | 'desktop'
   | 'workspaces'
   | 'architecture'
   | 'settings';

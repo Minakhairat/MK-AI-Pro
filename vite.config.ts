@@ -8,19 +8,23 @@ import {VitePWA} from 'vite-plugin-pwa';
 function resolveBasePath(): string {
   const raw = (process.env.VITE_BASE_PATH || '/').trim();
   if (!raw || raw === '/') return '/';
+  if (raw === './' || raw === '.') return './';
   const withLeading = raw.startsWith('/') ? raw : `/${raw}`;
   return withLeading.endsWith('/') ? withLeading : `${withLeading}/`;
 }
 
 export default defineConfig(() => {
   const basePath = resolveBasePath();
+  const isElectronBuild = process.env.ELECTRON_BUILD === 'true';
 
   return {
     base: basePath,
     plugins: [
       react(),
       tailwindcss(),
-      VitePWA({
+      ...(!isElectronBuild
+        ? [
+            VitePWA({
         registerType: 'autoUpdate',
         includeAssets: [
           'icon.svg',
@@ -99,6 +103,8 @@ export default defineConfig(() => {
           type: 'module',
         },
       }),
+          ]
+        : []),
       // Copies src/assets into dist/ and creates 404.html SPA fallback for GitHub Pages.
       {
         name: 'copy-unbundled-src-assets-and-gh-pages-fallback',

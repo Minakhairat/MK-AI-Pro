@@ -1,4 +1,5 @@
 import { auth } from './firebase';
+import { getDesktopBridge, isDesktopApp } from './desktopClient';
 import type {
   AiEnginePingResponse,
   BackendHealthResponse,
@@ -50,6 +51,41 @@ function buildStaticHostingHealth(): BackendHealthResponse {
 }
 
 export async function fetchBackendHealth(): Promise<BackendHealthResponse> {
+  const bridge = getDesktopBridge();
+  if (bridge) {
+    try {
+      const [info, engine, hw] = await Promise.all([
+        bridge.getRuntimeInfo(),
+        bridge.getEngineStatus(),
+        bridge.detectHardware(false),
+      ]);
+      return {
+        status: engine.healthy ? 'ok' : 'desktop_standby',
+        service: 'mk-ai-desktop-electron',
+        phase: `MK AI Desktop v${info.appVersion} · ${engine.healthy ? `Local FastAPI :${engine.port}` : 'Standby'}`,
+        timestamp: new Date().toISOString(),
+        uptimeSeconds: 0,
+        adapters: {
+          storage: {
+            provider: 'local',
+            region: info.storageRoot,
+            configured: true,
+            supportsPrivateLocalFirst: true,
+            description: `Local MK-AI-Data workspace at ${info.storageRoot}`,
+          },
+          compute: {
+            provider: hw.pytorchCudaAvailable ? 'desktop-cuda' : 'desktop-python-cpu',
+            aiEngineConfigured: engine.healthy,
+            supportsCpuWorkers: true,
+            supportsGpuWorkers: hw.pytorchCudaAvailable,
+          },
+        },
+      };
+    } catch {
+      return buildStaticHostingHealth();
+    }
+  }
+
   try {
     const res = await fetch('/api/health');
     const ct = res.headers.get('content-type') || '';
@@ -63,6 +99,49 @@ export async function fetchBackendHealth(): Promise<BackendHealthResponse> {
 }
 
 export async function pingAiEngine(): Promise<AiEnginePingResponse> {
+  const bridge = getDesktopBridge();
+  if (bridge) {
+    try {
+      const [engine, hw] = await Promise.all([
+        bridge.getEngineStatus(),
+        bridge.detectHardware(false),
+      ]);
+      if (engine.healthy) {
+        return {
+          reachable: true,
+          status: 'online',
+          message: `MK AI Desktop Engine online (127.0.0.1:${engine.port})`,
+          hardware: {
+            cpu_count: hw.logicalProcessors,
+            architecture: hw.cpuArch,
+            os_name: hw.osVersion,
+            torch_installed: hw.pytorchInstalled,
+            torch_version: hw.pytorchVersion,
+            torchvision_installed: Boolean(hw.torchvisionVersion),
+            ultralytics_installed: hw.ultralyticsInstalled,
+            cuda_available: hw.pytorchCudaAvailable,
+            cuda_device_count: hw.nvidiaGpuAvailable ? 1 : 0,
+            cuda_devices: hw.nvidiaGpuName ? [hw.nvidiaGpuName] : [],
+            mps_available: false,
+          },
+        };
+      }
+      return {
+        reachable: false,
+        status: 'offline',
+        message: engine.lastError || 'Local Desktop AI Engine is stopped. Start or repair it in Desktop Status.',
+        hardware: null,
+      };
+    } catch (err) {
+      return {
+        reachable: false,
+        status: 'error',
+        message: err instanceof Error ? err.message : 'Desktop engine probe failed',
+        hardware: null,
+      };
+    }
+  }
+
   try {
     const headers = await getAuthHeaders();
     const res = await fetch('/api/ai-engine/ping', {
@@ -105,6 +184,33 @@ export async function fetchAiEngineCapabilities(): Promise<PythonWorkerCapabilit
     cpuCount: 0,
     supportedArchitectures: [],
   };
+
+  const bridge = getDesktopBridge();
+  if (bridge) {
+    try {
+      const raw = (await bridge.probeLocalEngineCapabilities()) as Record<string, unknown>;
+      return {
+        reachable: true,
+        torchInstalled: Boolean(raw.torch_installed),
+        torchvisionInstalled: Boolean(raw.torchvision_installed),
+        ultralyticsInstalled: Boolean(raw.ultralytics_installed),
+        timmInstalled: Boolean(raw.timm_installed),
+        transformersInstalled: Boolean(raw.transformers_installed),
+        onnxInstalled: Boolean(raw.onnx_installed),
+        onnxruntimeInstalled: Boolean(raw.onnxruntime_installed),
+        paddleocrInstalled: Boolean(raw.paddleocr_installed),
+        cudaAvailable: Boolean(raw.cuda_available),
+        mpsAvailable: Boolean(raw.mps_available),
+        cpuCount: typeof raw.cpu_count === 'number' ? raw.cpu_count : 0,
+        supportedArchitectures: Array.isArray(raw.supported_architectures)
+          ? raw.supported_architectures.map(String)
+          : [],
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
   try {
     const headers = await getAuthHeaders();
     const res = await fetch('/api/ai-engine/capabilities', { headers });
@@ -155,7 +261,15 @@ export async function startPythonTrainingJob(payload: {
   weightDecay?: number;
   multiLabel?: boolean;
   exportOnnx?: boolean;
+  datasetDirPath?: string | null;
+  datasetYamlPath?: string | null;
 }): Promise<PythonJobResponse> {
+  const bridge = getDesktopBridge();
+  if (bridge && isDesktopApp()) {
+    const raw = await bridge.startLocalTrainingJob(payload as unknown as Record<string, unknown>);
+    return raw as unknown as PythonJobResponse;
+  }
+
   const headers = await getAuthHeaders();
   const res = await fetch('/api/training/jobs', {
     method: 'POST',
@@ -170,6 +284,12 @@ export async function startPythonTrainingJob(payload: {
 }
 
 export async function fetchPythonTrainingJob(jobId: string): Promise<PythonJobResponse> {
+  const bridge = getDesktopBridge();
+  if (bridge && isDesktopApp()) {
+    const raw = await bridge.fetchLocalTrainingJob(jobId);
+    return raw as unknown as PythonJobResponse;
+  }
+
   const headers = await getAuthHeaders();
   const res = await fetch(`/api/training/jobs/${encodeURIComponent(jobId)}`, { headers });
   const data = await res.json().catch(() => ({}));
@@ -183,6 +303,12 @@ export async function controlPythonTrainingJob(
   jobId: string,
   action: 'pause' | 'resume' | 'cancel'
 ): Promise<PythonJobResponse> {
+  const bridge = getDesktopBridge();
+  if (bridge && isDesktopApp()) {
+    const raw = await bridge.controlLocalTrainingJob(jobId, action);
+    return raw as unknown as PythonJobResponse;
+  }
+
   const headers = await getAuthHeaders();
   const res = await fetch(`/api/training/jobs/${encodeURIComponent(jobId)}/${action}`, {
     method: 'POST',

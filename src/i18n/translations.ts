@@ -7,6 +7,7 @@ export interface TranslationDictionary {
     dashboard: string;
     projects: string;
     modelHub: string;
+    desktop: string;
     workspaces: string;
     architecture: string;
     settings: string;
@@ -370,6 +371,12 @@ export interface TranslationDictionary {
     costGateTitle: string;
     costGateConfirmBtn: string;
     costGateWarning: string;
+    execTargetLabel: string;
+    execTargetBrowser: string;
+    execTargetDesktop: string;
+    execTargetCloud: string;
+    execTargetWebDesktopHint: string;
+    execTargetStagingHint: string;
   };
   evaluationStudio: {
     heading: string;
@@ -630,32 +637,84 @@ export interface TranslationDictionary {
     app_exported: string;
     app_deleted: string;
   };
-  common: {
-    loading: string;
-    errorTitle: string;
-    retry: string;
-    close: string;
-    datasets: string;
-    models: string;
-    apps: string;
-    openWorkspace: string;
-    noDescription: string;
-  };
-}
+    common: {
+      loading: string;
+      errorTitle: string;
+      retry: string;
+      close: string;
+      datasets: string;
+      models: string;
+      apps: string;
+      openWorkspace: string;
+      noDescription: string;
+    };
+    desktopView: {
+      heading: string;
+      subheading: string;
+      webModeTitle: string;
+      webModeDesc: string;
+      downloadWindowsBtn: string;
+      offlineInstallerNote: string;
+      runtimeCardTitle: string;
+      engineStatusCardTitle: string;
+      hardwareCardTitle: string;
+      storageCardTitle: string;
+      compatibilityMatrixTitle: string;
+      weightsManagerTitle: string;
+      updatesCardTitle: string;
+      syncCardTitle: string;
+      restartEngineBtn: string;
+      stopEngineBtn: string;
+      repairPythonBtn: string;
+      runWizardBtn: string;
+      checkUpdatesBtn: string;
+      clearCacheBtn: string;
+      openFolderBtn: string;
+      changeFolderBtn: string;
+      createBackupBtn: string;
+      exportDiagnosticsBtn: string;
+      onlineStatus: string;
+      offlineStatus: string;
+      deviceSelectorLabel: string;
+      autoStartLabel: string;
+      stopOnExitLabel: string;
+      cloudSyncConsentLabel: string;
+      compatibleLabel: string;
+      warningLabel: string;
+      blockedLabel: string;
+      downloadWeightBtn: string;
+      rollbackWeightBtn: string;
+      conflictsTitle: string;
+      noConflictsLabel: string;
+    };
+    setupWizard: {
+      title: string;
+      subtitle: string;
+      runWizardBtn: string;
+      runningBtn: string;
+      repairBtn: string;
+      continueDesktopBtn: string;
+      profileLabel: string;
+      readyBanner: string;
+      partialBanner: string;
+      stepDurationUnit: string;
+    };
+  }
 
-export const translations: Record<Locale, TranslationDictionary> = {
-  en: {
-    brandName: 'MK AI',
-    brandCompany: 'MK Tech',
-    nav: {
-      dashboard: 'Dashboard',
-      projects: 'Projects',
-      modelHub: 'Model Hub',
-      workspaces: 'Workspaces',
-      architecture: 'System & Roadmap',
-      settings: 'Account & Security',
-      signOut: 'Sign Out',
-    },
+  export const translations: Record<Locale, TranslationDictionary> = {
+    en: {
+      brandName: 'MK AI',
+      brandCompany: 'MK Tech',
+      nav: {
+        dashboard: 'Dashboard',
+        projects: 'Projects',
+        modelHub: 'Model Hub',
+        desktop: 'Desktop Engine',
+        workspaces: 'Workspaces',
+        architecture: 'System & Roadmap',
+        settings: 'Account & Security',
+        signOut: 'Sign Out',
+      },
     topBar: {
       newProject: 'New Project',
       backToProjects: 'All Projects',
@@ -1029,6 +1088,12 @@ export const translations: Record<Locale, TranslationDictionary> = {
       costGateTitle: 'External GPU / Python Worker Preflight Confirmation',
       costGateConfirmBtn: 'Confirm Hardware & Dispatch Training',
       costGateWarning: 'This model runs on the connected Python FastAPI GPU/CPU worker instead of your local browser. Confirm worker resources before dispatching.',
+      execTargetLabel: 'Training Execution Target',
+      execTargetBrowser: 'Browser TensorFlow.js (Local Web)',
+      execTargetDesktop: 'Desktop Local Python (PyTorch / CUDA / YOLO)',
+      execTargetCloud: 'Cloud Python Server (/api/*)',
+      execTargetWebDesktopHint: 'Desktop Local Python runs inside MK AI Desktop for Windows without CMD or manual Python setup. Switch to Browser TF.js on Web or launch MK AI Desktop.',
+      execTargetStagingHint: 'Staging local dataset images from IndexedDB into MK-AI-Data before starting local Python training...',
     },
     evaluationStudio: {
       heading: 'Model Evaluation Studio',
@@ -1305,6 +1370,57 @@ export const translations: Record<Locale, TranslationDictionary> = {
       openWorkspace: 'Open',
       noDescription: 'No description provided.',
     },
+    desktopView: {
+      heading: 'MK AI Desktop & Local Python Engine',
+      subheading: 'Manage the isolated Python AI runtime, NVIDIA CUDA hardware acceleration, local MK-AI-Data storage, weight artifacts, and zero-CMD diagnostics.',
+      webModeTitle: 'Web Platform Active — Windows Desktop Installer Ready',
+      webModeDesc: 'You are currently running MK AI in a Web browser (GitHub Pages / Static Web) with real In-Browser TensorFlow.js training. For zero-CMD local PyTorch, NVIDIA CUDA GPU acceleration, and Ultralytics YOLO training on Windows 10/11, install MK AI Desktop.',
+      downloadWindowsBtn: 'Build / Download MK-AI-Setup.exe via GitHub Actions',
+      offlineInstallerNote: 'Supports both Online Installer (MK-AI-Setup.exe) and Full Offline Installer (MK-AI-Offline-Setup.exe).',
+      runtimeCardTitle: 'App & Isolated Python Runtime',
+      engineStatusCardTitle: 'Local FastAPI AI Engine',
+      hardwareCardTitle: 'Hardware & CUDA Acceleration',
+      storageCardTitle: 'MK-AI-Data Local Storage',
+      compatibilityMatrixTitle: 'Hardware-to-Model Compatibility Matrix',
+      weightsManagerTitle: 'Verified Local Model Weights & Rollback',
+      updatesCardTitle: 'Independent Component Updates',
+      syncCardTitle: 'Offline-First Workspace & Consent-Gated Cloud Sync',
+      restartEngineBtn: 'Restart AI Engine',
+      stopEngineBtn: 'Stop Engine',
+      repairPythonBtn: 'Repair Python Env',
+      runWizardBtn: 'Run 10-Step Setup Wizard',
+      checkUpdatesBtn: 'Check Updates',
+      clearCacheBtn: 'Clear Temp Cache',
+      openFolderBtn: 'Open Storage Folder',
+      changeFolderBtn: 'Change Storage Folder',
+      createBackupBtn: 'Create Backup',
+      exportDiagnosticsBtn: 'Export Diagnostic Report',
+      onlineStatus: 'Online & Protected',
+      offlineStatus: 'Stopped / Offline',
+      deviceSelectorLabel: 'Compute Device',
+      autoStartLabel: 'Auto-start local FastAPI engine on app launch',
+      stopOnExitLabel: 'Stop local FastAPI engine cleanly on app exit',
+      cloudSyncConsentLabel: 'Explicitly allow uploading local project metadata to Cloud Sync',
+      compatibleLabel: 'Ready',
+      warningLabel: 'Caution',
+      blockedLabel: 'Unsupported',
+      downloadWeightBtn: 'Download',
+      rollbackWeightBtn: 'Rollback',
+      conflictsTitle: 'Sync Conflict Inspection',
+      noConflictsLabel: 'Zero sync conflicts detected between local MK-AI-Data and Cloud workspace.',
+    },
+    setupWizard: {
+      title: 'MK AI Desktop — First-Launch Setup & Verification',
+      subtitle: 'Automatically prepares the isolated Python runtime, verifies PyTorch & Ultralytics dependencies, detects CPU/NVIDIA GPU, initializes MK-AI-Data, and tests the local FastAPI engine.',
+      runWizardBtn: 'Run Complete 10-Step Verification',
+      runningBtn: 'Verifying Environment...',
+      repairBtn: 'Install / Repair Python Environment',
+      continueDesktopBtn: 'Continue to Workspace',
+      profileLabel: 'Execution Profile',
+      readyBanner: 'All critical environment checks passed. Local Python AI training is ready without manual CMD configuration.',
+      partialBanner: 'Desktop shell and Browser TF.js are ready; inspect the highlighted step below to enable full local Python/GPU acceleration.',
+      stepDurationUnit: 'ms',
+    },
   },
   ar: {
     brandName: 'MK AI',
@@ -1313,6 +1429,7 @@ export const translations: Record<Locale, TranslationDictionary> = {
       dashboard: 'لوحة التحكم',
       projects: 'المشروعات',
       modelHub: 'مركز النماذج',
+      desktop: 'محرك سطح المكتب',
       workspaces: 'مساحات العمل',
       architecture: 'المعمارية وخارطة الطريق',
       settings: 'الحساب والأمان',
@@ -1691,6 +1808,12 @@ export const translations: Record<Locale, TranslationDictionary> = {
       costGateTitle: 'تأكيد موارد خادم GPU/Python الخارجي',
       costGateConfirmBtn: 'تأكيد الموارد وإرسال التدريب',
       costGateWarning: 'سيتم تشغيل هذا النموذج على خادم Python FastAPI الخارجي وليس في المتصفح. يرجى تأكيد جاهزية الخادم قبل البدء.',
+      execTargetLabel: 'بيئة تنفيذ التدريب',
+      execTargetBrowser: 'المتصفح TensorFlow.js (ويب محلي)',
+      execTargetDesktop: 'تطبيق سطح المكتب Python المحلي (PyTorch / CUDA / YOLO)',
+      execTargetCloud: 'خادم Python السحابي (/api/*)',
+      execTargetWebDesktopHint: 'يعمل التدريب المحلي بـ PyTorch و CUDA تلقائياً داخل تطبيق MK AI Desktop لنظام ويندوز بدون CMD. اختر TensorFlow.js على الويب أو افتح نسخة سطح المكتب.',
+      execTargetStagingHint: 'جارٍ تجهيز صور مجموعة البيانات من IndexedDB إلى مجلد MK-AI-Data قبل بدء تدريب بايثون المحلي...',
     },
     evaluationStudio: {
       heading: 'استوديو تقييم ومقارنة النماذج',
@@ -1966,6 +2089,57 @@ export const translations: Record<Locale, TranslationDictionary> = {
       apps: 'التطبيقات',
       openWorkspace: 'فتح',
       noDescription: 'لا يوجد وصف مضاف.',
+    },
+    desktopView: {
+      heading: 'تطبيق MK AI Desktop ومحرك بايثون المحلي',
+      subheading: 'إدارة بيئة بايثون المعزولة، واكتشاف كارت الشاشة NVIDIA CUDA، وتخزين MK-AI-Data المحلي، وأوزان النماذج، والتشخيص التلقائي بدون أي أوامر CMD.',
+      webModeTitle: 'نسخة الويب نشطة — مثبّت ويندوز الرسمي جاهز للبناء',
+      webModeDesc: 'أنت تستخدم حالياً MK AI عبر المتصفح مع تدريب فعلي بواسطة TensorFlow.js. للحصول على تدريب PyTorch محلي وتسريع NVIDIA GPU و Ultralytics YOLO تلقائياً على ويندوز 10 و 11 بدون CMD، استخدم تطبيق MK AI Desktop.',
+      downloadWindowsBtn: 'إنشاء / تنزيل MK-AI-Setup.exe عبر GitHub Actions',
+      offlineInstallerNote: 'يدعم كلاً من المثبّت الشبكي (MK-AI-Setup.exe) والمثبّت الكامل أوفلاين (MK-AI-Offline-Setup.exe).',
+      runtimeCardTitle: 'التطبيق وبيئة بايثون المعزولة',
+      engineStatusCardTitle: 'محرك FastAPI المحلي',
+      hardwareCardTitle: 'العتاد وتسريع كارت الشاشة CUDA',
+      storageCardTitle: 'مساحة التخزين المحلية MK-AI-Data',
+      compatibilityMatrixTitle: 'مصفوفة توافق النماذج مع عتاد جهازك',
+      weightsManagerTitle: 'إدارة الأوزان المحلية والتحقق SHA-256',
+      updatesCardTitle: 'التحديثات المستقلة لمكونات المنصة',
+      syncCardTitle: 'العمل دون اتصال والمزامنة السحابية الصريحة',
+      restartEngineBtn: 'إعادة تشغيل محرك AI',
+      stopEngineBtn: 'إيقاف المحرك',
+      repairPythonBtn: 'إصلاح بيئة بايثون',
+      runWizardBtn: 'تشغيل معالج الفحص (10 خطوات)',
+      checkUpdatesBtn: 'فحص التحديثات',
+      clearCacheBtn: 'تنظيف الملفات المؤقتة',
+      openFolderBtn: 'فتح مجلد التخزين',
+      changeFolderBtn: 'تغيير مسار التخزين',
+      createBackupBtn: 'إنشاء نسخة احتياطية',
+      exportDiagnosticsBtn: 'تصدير تقرير التشخيص',
+      onlineStatus: 'متصل ومحمي بالتوكن',
+      offlineStatus: 'متوقف',
+      deviceSelectorLabel: 'جهاز التنفيذ',
+      autoStartLabel: 'تشغيل محرك FastAPI تلقائياً عند فتح البرنامج',
+      stopOnExitLabel: 'إيقاف محرك FastAPI بأمان عند إغلاق البرنامج',
+      cloudSyncConsentLabel: 'السماح صراحةً برفع بيانات المشروعات للمزامنة السحابية',
+      compatibleLabel: 'جاهز',
+      warningLabel: 'تنبيه',
+      blockedLabel: 'غير مدعوم',
+      downloadWeightBtn: 'تنزيل',
+      rollbackWeightBtn: 'استرجاع السابق',
+      conflictsTitle: 'فحص تعارض المزامنة',
+      noConflictsLabel: 'لا توجد تعارضات مزامنة بين التخزين المحلي MK-AI-Data والسحابة.',
+    },
+    setupWizard: {
+      title: 'MK AI Desktop — معالج التهيئة والتحقق التلقائي لأول تشغيل',
+      subtitle: 'يفحص النظام تلقائياً، ويهيئ بيئة بايثون المعزولة، ويتحقق من PyTorch و YOLO وكارت الشاشة، وينشئ مجلدات MK-AI-Data، ويختبر محرك FastAPI المحلي.',
+      runWizardBtn: 'تشغيل الفحص الكامل (10 خطوات)',
+      runningBtn: 'جارٍ فحص وتجهيز البيئة...',
+      repairBtn: 'تثبيت / إصلاح بيئة بايثون تلقائياً',
+      continueDesktopBtn: 'الدخول إلى مساحة العمل',
+      profileLabel: 'ملف التشغيل',
+      readyBanner: 'نجحت جميع الفحوصات الأساسية. التدريب المحلي عبر Python جاهز للعمل فوراً بدون أي إعداد يدوي.',
+      partialBanner: 'واجهة التطبيق والتدريب بالمتصفح جاهزان؛ راجع الخطوة المحددة أدناه لتفعيل محرك بايثون/كارت الشاشة المحلي.',
+      stepDurationUnit: 'مللي ثانية',
     },
   },
 };

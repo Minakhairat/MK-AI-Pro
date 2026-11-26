@@ -9,6 +9,8 @@ import { ArchitectureView } from './components/architecture/ArchitectureView';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { OfflineIndicator } from './components/common/OfflineIndicator';
 import { DashboardView } from './components/dashboard/DashboardView';
+import { DesktopSetupWizard } from './components/desktop/DesktopSetupWizard';
+import { DesktopStatusView } from './components/desktop/DesktopStatusView';
 import { Sidebar } from './components/layout/Sidebar';
 import { TopBar } from './components/layout/TopBar';
 import { ModelHubView } from './components/models/ModelHubView';
@@ -19,6 +21,7 @@ import { WorkspacesView } from './components/workspaces/WorkspacesView';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { I18nProvider, useI18n } from './contexts/I18nContext';
 import { ThemeProvider } from './contexts/ThemeContext';
+import { getDesktopBridge } from './lib/desktopClient';
 import {
   subscribeActivityLogs,
   subscribeProjects,
@@ -41,6 +44,20 @@ function WorkspaceShell() {
   const [trainingRuns, setTrainingRuns] = useState<TrainingRun[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(true);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [setupWizardOpen, setSetupWizardOpen] = useState(false);
+
+  useEffect(() => {
+    const bridge = getDesktopBridge();
+    if (!bridge) return;
+    bridge
+      .getConfig()
+      .then((cfg) => {
+        if (!cfg.firstLaunchCompleted) {
+          setSetupWizardOpen(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!user || !user.emailVerified) {
@@ -135,6 +152,8 @@ function WorkspaceShell() {
             <div className="max-w-7xl mx-auto">
               <ModelHubView />
             </div>
+          ) : section === 'desktop' ? (
+            <DesktopStatusView onOpenWizard={() => setSetupWizardOpen(true)} />
           ) : section === 'workspaces' ? (
             <WorkspacesView workspaces={workspaces} />
           ) : section === 'architecture' ? (
@@ -154,6 +173,11 @@ function WorkspaceShell() {
           setSection('projects');
           setSelectedProjectId(proj.id);
         }}
+      />
+
+      <DesktopSetupWizard
+        open={setupWizardOpen}
+        onClose={() => setSetupWizardOpen(false)}
       />
     </div>
   );

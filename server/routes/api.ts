@@ -25,6 +25,18 @@ function getValidatedAiEngineUrl(): URL | null {
   }
 }
 
+function getAiEngineHeaders(includeJson = false): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (includeJson) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const token = process.env.MK_ENGINE_TOKEN?.trim();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
 apiRouter.get('/health', (_req, res) => {
   const storage = getStorageAdapter().describe();
   const compute = getComputeDescriptor();
@@ -137,6 +149,7 @@ apiRouter.post('/ai-engine/ping', requireAuth, async (_req: AuthenticatedRequest
     const target = new URL('/health', engineUrl).toString();
     const response = await fetch(target, {
       method: 'GET',
+      headers: getAiEngineHeaders(false),
       signal: AbortSignal.timeout(2500),
     });
 
@@ -195,6 +208,7 @@ apiRouter.get('/ai-engine/capabilities', requireAuth, async (_req: Authenticated
     const target = new URL('/capabilities', engineUrl).toString();
     const response = await fetch(target, {
       method: 'GET',
+      headers: getAiEngineHeaders(false),
       signal: AbortSignal.timeout(2500),
     });
     if (!response.ok) {
@@ -269,7 +283,7 @@ apiRouter.post('/training/jobs', requireAuth, async (req: AuthenticatedRequest, 
     const target = new URL('/jobs/train', engineUrl).toString();
     const response = await fetch(target, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAiEngineHeaders(true),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(10000),
     });
@@ -298,6 +312,7 @@ apiRouter.get('/training/jobs/:jobId', requireAuth, async (req: AuthenticatedReq
     const target = new URL(`/jobs/${encodeURIComponent(jobId)}`, engineUrl).toString();
     const response = await fetch(target, {
       method: 'GET',
+      headers: getAiEngineHeaders(false),
       signal: AbortSignal.timeout(5000),
     });
     const payload = await response.json().catch(() => ({}));
@@ -326,6 +341,7 @@ apiRouter.post('/training/jobs/:jobId/:action', requireAuth, async (req: Authent
     const target = new URL(`/jobs/${encodeURIComponent(jobId)}/${action}`, engineUrl).toString();
     const response = await fetch(target, {
       method: 'POST',
+      headers: getAiEngineHeaders(false),
       signal: AbortSignal.timeout(5000),
     });
     const payload = await response.json().catch(() => ({}));
