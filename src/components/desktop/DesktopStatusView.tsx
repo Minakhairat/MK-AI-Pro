@@ -18,6 +18,12 @@ import {
 } from 'lucide-react';
 import { useI18n } from '../../contexts/I18nContext';
 import { getDesktopBridge, isDesktopApp } from '../../lib/desktopClient';
+import {
+  type DesktopReleaseInfo,
+  buildEmptyDesktopReleaseInfo,
+  fetchLatestDesktopRelease,
+  formatReleaseFileSize,
+} from '../../lib/desktopRelease';
 import { evaluateModelHardwareCompatibility } from '../../lib/hardwareCompatibility';
 import { MODEL_CATALOG } from '../../lib/modelRegistry';
 import type {
@@ -60,6 +66,9 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [releaseInfo, setReleaseInfo] = useState<DesktopReleaseInfo>(() =>
+    buildEmptyDesktopReleaseInfo(undefined, 'loading')
+  );
 
   const loadDesktopSnapshot = async (forceHardware = false) => {
     const bridge = getDesktopBridge();
@@ -88,9 +97,21 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
     }
   };
 
+  const refreshReleaseStatus = async () => {
+    setBusyAction('checkRelease');
+    try {
+      const info = await fetchLatestDesktopRelease();
+      setReleaseInfo(info);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   useEffect(() => {
     if (desktopMode) {
       void loadDesktopSnapshot(false);
+    } else {
+      void refreshReleaseStatus();
     }
   }, [desktopMode]);
 
@@ -118,6 +139,15 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
 
   // Web Browser Mode View (GitHub Pages / Standard Web)
   if (!desktopMode) {
+    const releaseDateDisplay = releaseInfo.publishedAt
+      ? new Date(releaseInfo.publishedAt).toLocaleDateString(
+          locale === 'ar' ? 'ar-EG' : 'en-US',
+          { year: 'numeric', month: 'short', day: 'numeric' }
+        )
+      : '—';
+    const installSteps =
+      locale === 'ar' ? releaseInfo.installStepsAr : releaseInfo.installStepsEn;
+
     return (
       <div className="max-w-6xl mx-auto space-y-6">
         <header className="space-y-1">
@@ -127,8 +157,8 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
           <p className="text-sm text-zinc-600 dark:text-zinc-400">{t.desktopView.subheading}</p>
         </header>
 
-        <section className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 space-y-4">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <section className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 space-y-5">
+          <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
             <div className="space-y-1.5 max-w-2xl">
               <div className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                 <Monitor className="w-4 h-4 text-red-600" />
@@ -141,16 +171,141 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
                 {t.desktopView.offlineInstallerNote}
               </p>
             </div>
-            <a
-              href="https://github.com/mk-tech/MK-AI-Pro/actions"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 shrink-0"
-            >
-              <Download className="w-4 h-4" />
-              <span>{t.desktopView.downloadWindowsBtn}</span>
-            </a>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {releaseInfo.available && releaseInfo.installerAsset ? (
+                <>
+                  <a
+                    href={releaseInfo.installerAsset.downloadUrl}
+                    download={releaseInfo.installerAsset.name}
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>{t.desktopView.downloadReadyBtn}</span>
+                  </a>
+                  {releaseInfo.offlineAsset && (
+                    <a
+                      href={releaseInfo.offlineAsset.downloadUrl}
+                      download={releaseInfo.offlineAsset.name}
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>{t.desktopView.downloadOfflineBtn}</span>
+                    </a>
+                  )}
+                  <a
+                    href={releaseInfo.releasesPageUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-2.5 text-xs font-semibold rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                  >
+                    <span>{t.desktopView.viewAllReleasesBtn}</span>
+                  </a>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busyAction === 'checkRelease'}
+                  onClick={() => void refreshReleaseStatus()}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-50"
+                >
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 ${busyAction === 'checkRelease' ? 'animate-spin' : ''}`}
+                  />
+                  <span>{t.desktopView.refreshReleaseBtn}</span>
+                </button>
+              )}
+            </div>
           </div>
+
+          {/* Honest Coming Soon Banner OR Verified Release Metadata */}
+          {!releaseInfo.available || !releaseInfo.installerAsset ? (
+            <div className="p-4 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 space-y-1.5 text-xs">
+              <div className="font-semibold text-zinc-900 dark:text-zinc-100">
+                {releaseInfo.status === 'loading'
+                  ? 'Checking latest Windows Desktop release...'
+                  : t.desktopView.downloadComingSoonTitle}
+              </div>
+              <p className="text-zinc-600 dark:text-zinc-400">
+                {t.desktopView.downloadComingSoonDesc}
+              </p>
+              {releaseInfo.statusReason && (
+                <p className="font-mono text-[11px] text-zinc-500">{releaseInfo.statusReason}</p>
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-3 border-t border-zinc-200 dark:border-zinc-800 text-xs tabular-nums">
+              <div className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950">
+                <div className="text-[11px] text-zinc-500">{t.desktopView.releaseVersionLabel}</div>
+                <div className="font-mono font-semibold text-zinc-900 dark:text-zinc-100">
+                  {releaseInfo.version ?? '—'}
+                </div>
+              </div>
+              <div className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950">
+                <div className="text-[11px] text-zinc-500">{t.desktopView.releaseSizeLabel}</div>
+                <div className="font-mono font-semibold text-zinc-900 dark:text-zinc-100">
+                  {formatReleaseFileSize(releaseInfo.installerAsset.sizeBytes)}
+                </div>
+              </div>
+              <div className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950">
+                <div className="text-[11px] text-zinc-500">{t.desktopView.releaseDateLabel}</div>
+                <div className="font-mono font-semibold text-zinc-900 dark:text-zinc-100">
+                  {releaseDateDisplay}
+                </div>
+              </div>
+              <div className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950">
+                <div className="text-[11px] text-zinc-500">{t.desktopView.supportedOsLabel}</div>
+                <div className="font-semibold text-zinc-900 dark:text-zinc-100">
+                  {releaseInfo.supportedWindows}
+                </div>
+              </div>
+              {releaseInfo.installerAsset.sha256 && (
+                <div className="sm:col-span-2 lg:col-span-4 p-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950">
+                  <div className="text-[11px] text-zinc-500">{t.desktopView.checksumLabel}</div>
+                  <div className="font-mono text-[11px] text-zinc-800 dark:text-zinc-200 break-all">
+                    {releaseInfo.installerAsset.sha256}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* System Requirements & Installation Instructions */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-t border-zinc-200 dark:border-zinc-800 text-xs">
+            <div className="p-4 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 space-y-2">
+              <div className="font-semibold text-zinc-900 dark:text-zinc-100">
+                {t.desktopView.systemRequirementsTitle}
+              </div>
+              <ul className="space-y-1 text-zinc-600 dark:text-zinc-400 list-disc ps-4">
+                {releaseInfo.systemRequirements.map((reqItem) => (
+                  <li key={reqItem}>{reqItem}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="p-4 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 space-y-2">
+              <div className="font-semibold text-zinc-900 dark:text-zinc-100">
+                {t.desktopView.installStepsTitle}
+              </div>
+              <ol className="space-y-1 text-zinc-600 dark:text-zinc-400 list-decimal ps-4">
+                {installSteps.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ol>
+            </div>
+          </div>
+
+          {releaseInfo.available && releaseInfo.releaseNotes && (
+            <div className="p-4 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 space-y-1.5 text-xs">
+              <div className="font-semibold text-zinc-900 dark:text-zinc-100">
+                {t.desktopView.releaseNotesTitle}
+              </div>
+              <p className="text-zinc-600 dark:text-zinc-400 whitespace-pre-line">
+                {releaseInfo.releaseNotes}
+              </p>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2 border-t border-zinc-200 dark:border-zinc-800 text-xs">
             <div className="p-4 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 space-y-1">

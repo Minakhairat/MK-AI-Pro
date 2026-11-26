@@ -693,6 +693,20 @@ export interface TranslationDictionary {
       rotateTokenBtn: string;
       tokenRotatedNotice: string;
       tokenRepairsLabel: string;
+      downloadComingSoonTitle: string;
+      downloadComingSoonDesc: string;
+      downloadReadyBtn: string;
+      downloadOfflineBtn: string;
+      viewAllReleasesBtn: string;
+      refreshReleaseBtn: string;
+      releaseVersionLabel: string;
+      releaseSizeLabel: string;
+      releaseDateLabel: string;
+      supportedOsLabel: string;
+      checksumLabel: string;
+      systemRequirementsTitle: string;
+      installStepsTitle: string;
+      releaseNotesTitle: string;
     };
     setupWizard: {
       title: string;
@@ -1422,6 +1436,20 @@ export interface TranslationDictionary {
       rotateTokenBtn: 'Rotate Engine Token',
       tokenRotatedNotice: 'Engine security token rotated and synchronized.',
       tokenRepairsLabel: 'Auto-repairs',
+      downloadComingSoonTitle: 'Desktop Installer Coming Soon',
+      downloadComingSoonDesc: 'No public MK-AI-Setup.exe GitHub Release is published yet. Publish a release tag (such as v1.0.0) in GitHub Actions to generate and attach the Windows installer automatically.',
+      downloadReadyBtn: 'Download for Windows (MK-AI-Setup.exe)',
+      downloadOfflineBtn: 'Download Offline Installer',
+      viewAllReleasesBtn: 'View GitHub Release Page',
+      refreshReleaseBtn: 'Check Release Status',
+      releaseVersionLabel: 'Version',
+      releaseSizeLabel: 'File Size',
+      releaseDateLabel: 'Release Date',
+      supportedOsLabel: 'Supported Windows Versions',
+      checksumLabel: 'SHA-256 Checksum',
+      systemRequirementsTitle: 'System Requirements',
+      installStepsTitle: 'Installation Instructions',
+      releaseNotesTitle: 'Release Notes',
     },
     setupWizard: {
       title: 'MK AI Desktop — First-Launch Setup & Verification',
@@ -2149,6 +2177,20 @@ export interface TranslationDictionary {
       rotateTokenBtn: 'تدوير رمز المحرك',
       tokenRotatedNotice: 'تم تدوير رمز أمان المحرك ومزامنته بنجاح.',
       tokenRepairsLabel: 'الإصلاحات التلقائية',
+      downloadComingSoonTitle: 'مثبّت سطح المكتب قريباً (Desktop Installer Coming Soon)',
+      downloadComingSoonDesc: 'لم يتم نشر إصدار عام لملف MK-AI-Setup.exe على GitHub Releases بعد. عند نشر وسم إصدار (مثل v1.0.0) سيتم بناء المثبّت والتحقق منه وإرفاقه تلقائياً.',
+      downloadReadyBtn: 'تنزيل لويندوز (MK-AI-Setup.exe)',
+      downloadOfflineBtn: 'تنزيل النسخة الأوفلاين',
+      viewAllReleasesBtn: 'صفحة الإصدار على GitHub',
+      refreshReleaseBtn: 'تحديث حالة الإصدار',
+      releaseVersionLabel: 'الإصدار',
+      releaseSizeLabel: 'حجم الملف',
+      releaseDateLabel: 'تاريخ الإصدار',
+      supportedOsLabel: 'أنظمة ويندوز المدعومة',
+      checksumLabel: 'بصمة التحقق SHA-256',
+      systemRequirementsTitle: 'متطلبات النظام',
+      installStepsTitle: 'خطوات التثبيت',
+      releaseNotesTitle: 'ملاحظات الإصدار',
     },
     setupWizard: {
       title: 'MK AI Desktop — معالج التهيئة والتحقق التلقائي لأول تشغيل',

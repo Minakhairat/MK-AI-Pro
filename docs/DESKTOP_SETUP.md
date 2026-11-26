@@ -56,8 +56,12 @@ $env:OFFLINE_INSTALLER="1"
 npx electron-builder --config electron-builder.yml --win nsis -c.win.artifactName=MK-AI-Offline-Setup.exe
 ```
 
-### Preserving User Data on Upgrade / Uninstall
-`build/installer.nsh` initializes `%LOCALAPPDATA%\MK-AI-Data` during installation and explicitly prompts the user on uninstall whether to keep their datasets, projects, and trained weights (defaulting to preserving data).
+### Publishing Official GitHub Releases
+Push a release tag (e.g., `git tag v1.0.0 && git push origin v1.0.0`). `.github/workflows/build-desktop.yml` builds both `MK-AI-Setup.exe` and `MK-AI-Offline-Setup.exe` on `windows-latest`, verifies non-empty PE executables (`MZ` header), computes `SHA256SUMS.txt` + `desktop-release-manifest.json`, and publishes them automatically to `https://github.com/<owner>/<repo>/releases/latest`.
+
+### Preserving User Data & Cleaning Credentials on Upgrade / Uninstall
+- During application upgrades, `%APPDATA%\MK AI Desktop\security\` engine credentials persist automatically across versions.
+- During interactive uninstall, `build/installer.nsh` removes `%APPDATA%\MK AI Desktop\security\` credentials and transient engine lockfiles while prompting to preserve `%LOCALAPPDATA%\MK-AI-Data` (datasets, projects, trained weights) by default.
 
 ---
 

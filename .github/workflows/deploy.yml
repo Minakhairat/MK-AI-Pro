@@ -41,6 +41,7 @@ jobs:
       - name: Build static web app for GitHub Pages
         env:
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          VITE_GITHUB_REPO: ${{ github.repository }}
         run: npm run build
 
       - name: Upload GitHub Pages artifact

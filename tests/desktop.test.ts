@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -28,9 +29,15 @@ import { DesktopSyncService, detectSyncConflicts } from '../electron/services/sy
 import {
   EngineTokenManager,
   computeTokenFingerprint,
+  createElectronSafeStorageBackend,
   isValidEngineToken,
 } from '../electron/services/tokenManager.ts';
 import { compareSemver } from '../electron/services/updateManager.ts';
+import {
+  getDesktopReleasesUrl,
+  parseGitHubReleasePayload,
+  parseSha256SumsText,
+} from '../src/lib/desktopRelease.ts';
 import { evaluateModelHardwareCompatibility } from '../src/lib/hardwareCompatibility.ts';
 import { MODEL_CATALOG } from '../src/lib/modelRegistry.ts';
 import type { HardwareReport } from '../src/types/desktop.ts';
@@ -416,13 +423,220 @@ test('LocalEngineManager live-synchronizes token rotation with FastAPI server an
 
     // Simulate external/out-of-sync server rejecting token with 401 -> automatic token repair triggers
     serverActiveToken = 'different_desynced_token_value_1234567890';
-    await assert.rejects(() => engine.requestJson('/capabilities'), /bearer token|Python runtime/i);
+    await assert.rejects(
+      () => engine.requestJson('/capabilities'),
+      /Missing or invalid local engine|REDACTED_ENGINE_TOKEN/i
+    );
     assert.equal(engine.getTokenStatus().repairCount, 1);
     assert.equal(engine.getTokenStatus().lastRepairReason, 'rejected_or_missing_engine_token');
   } finally {
     if (server) {
+      server.closeAllConnections?.();
       await new Promise<void>((resolve) => server!.close(() => resolve()));
     }
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('Security Audit: AES-256-GCM fallback requires separate master key, OS vault upgrades cleanly on recovery, and concurrent rotation causes zero dropped requests', async () => {
+  const root = makeTempWorkspace('mk-ai-sec-audit-');
+  let srv: http.Server | null = null;
+  try {
+    const userData = path.join(root, 'userData');
+    const dataRoot = path.join(root, 'MK-AI-Data');
+    const manifestsDir = path.join(process.cwd(), 'ai_engine', 'manifests');
+    const storage = new DesktopStorageManager(userData, dataRoot);
+    const runtime = new PythonRuntimeManager({
+      userDataRoot: userData,
+      versionsManifestPath: path.join(manifestsDir, 'versions.json'),
+    });
+
+    // Preserve sample dataset to verify credential cleanup never deletes user datasets
+    fs.writeFileSync(path.join(storage.getSubdir('datasets'), 'keep.txt'), 'dataset-content');
+
+    // 1. OS vault unavailable -> AES-256-GCM with dedicated 0o600 master key (cannot decrypt from hostname+user+path alone)
+    let vaultAvailable = false;
+    const mockVault = {
+      isEncryptionAvailable: () => vaultAvailable,
+      encryptString: (s: string) => Buffer.from(`VAULT:${Buffer.from(s).toString('base64')}`),
+      decryptString: (b: Buffer) => {
+        const text = b.toString('utf8');
+        if (!text.startsWith('VAULT:')) throw new Error('Vault mismatch');
+        return Buffer.from(text.slice(6), 'base64').toString('utf8');
+      },
+    };
+
+    const mFallback = new EngineTokenManager({
+      userDataRoot: userData,
+      backend: createElectronSafeStorageBackend(mockVault),
+    });
+    const fallbackRes = mFallback.ensureToken();
+    assert.equal(fallbackRes.status.protectionMode, 'restricted_local_store');
+
+    const credPath = path.join(userData, 'security', 'mk-engine-credential.dat');
+    const masterKeyPath = path.join(userData, 'security', 'mk-engine-master.key');
+    assert.equal(fs.existsSync(masterKeyPath), true);
+
+    const env = JSON.parse(fs.readFileSync(credPath, 'utf8')) as {
+      encryptedPayloadBase64: string;
+      ivBase64: string;
+      authTagBase64: string;
+      saltHex: string;
+    };
+    const predictableOnlyKey = crypto.scryptSync(
+      `${os.hostname()}|${os.userInfo().username}|${path.join(userData, 'security')}`,
+      env.saltHex,
+      32
+    );
+    assert.throws(() => {
+      const dec = crypto.createDecipheriv(
+        'aes-256-gcm',
+        predictableOnlyKey,
+        Buffer.from(env.ivBase64, 'base64')
+      );
+      dec.setAuthTag(Buffer.from(env.authTagBase64, 'base64'));
+      dec.update(Buffer.from(env.encryptedPayloadBase64, 'base64'));
+      dec.final();
+    });
+
+    // 2. OS vault becomes available again -> seamlessly upgrades fallback token to OS DPAPI/Keychain & deletes legacy master key
+    vaultAvailable = true;
+    const mRecovered = new EngineTokenManager({
+      userDataRoot: userData,
+      backend: createElectronSafeStorageBackend(mockVault),
+    });
+    const recoveredRes = mRecovered.ensureToken();
+    assert.equal(recoveredRes.token, fallbackRes.token);
+    assert.equal(recoveredRes.status.protectionMode, 'os_dpapi_keychain');
+    assert.equal(fs.existsSync(masterKeyPath), false);
+
+    // 3. Concurrent requests during live token rotation experience 0 failed calls & 0 repairs
+    let serverTok = recoveredRes.token;
+    let unauthHits = 0;
+    srv = http.createServer((req, res) => {
+      const auth = req.headers.authorization || '';
+      const ok = auth === `Bearer ${serverTok}`;
+      if (!ok) {
+        unauthHits += 1;
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ detail: 'Invalid token' }));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        if (req.url === '/security/rotate-token') {
+          setTimeout(() => {
+            const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { new_token: string };
+            serverTok = parsed.new_token;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ rotated: true, token_protected: true }));
+          }, 30);
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ supported_architectures: ['yolo11n'] }));
+      });
+    });
+
+    await new Promise<void>((r) => srv!.listen(0, '127.0.0.1', r));
+    const addr = srv.address();
+    assert.ok(addr && typeof addr === 'object');
+
+    const engine = new LocalEngineManager({
+      storage,
+      runtime,
+      aiEngineDir: path.join(process.cwd(), 'ai_engine'),
+      tokenManager: mRecovered,
+    });
+    engine.setPortForTesting(addr.port);
+
+    const [rotOut, ...callOuts] = await Promise.all([
+      engine.rotateAndSyncToken(),
+      ...Array.from({ length: 12 }, () => engine.requestJson('/capabilities')),
+    ]);
+    assert.equal(rotOut.engineSynced, true);
+    assert.equal(unauthHits, 0);
+    assert.equal(callOuts.length, 12);
+    assert.equal(engine.getTokenStatus().repairCount, 0);
+
+    // Old token must be rejected after rotation; new token succeeds
+    const oldCall = await fetch(`http://127.0.0.1:${addr.port}/capabilities`, {
+      headers: { Authorization: `Bearer ${recoveredRes.token}` },
+    });
+    assert.equal(oldCall.status, 401);
+
+    // 4. Uninstall credential wipe removes credentials without deleting MK-AI-Data datasets
+    mRecovered.clearCredentials();
+    assert.equal(fs.existsSync(credPath), false);
+    assert.equal(fs.existsSync(path.join(storage.getSubdir('datasets'), 'keep.txt')), true);
+  } finally {
+    if (srv) {
+      srv.closeAllConnections?.();
+      await new Promise<void>((r) => srv!.close(() => r()));
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Desktop GitHub Release pipeline validates real MK-AI-Setup.exe assets and never redirects to broken /actions', () => {
+  const releasesUrl = getDesktopReleasesUrl('mk-tech/MK-AI-Pro');
+  assert.equal(releasesUrl, 'https://github.com/mk-tech/MK-AI-Pro/releases/latest');
+  assert.equal(releasesUrl.includes('/actions'), false);
+
+  const shaMap = parseSha256SumsText(
+    '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  MK-AI-Setup.exe\n'
+  );
+  assert.equal(
+    shaMap['MK-AI-Setup.exe'],
+    '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+  );
+
+  // Valid published release with verified GitHub download URL -> available
+  const validRel = parseGitHubReleasePayload(
+    {
+      draft: false,
+      prerelease: false,
+      tag_name: 'v1.0.0',
+      name: 'MK AI Desktop v1.0.0',
+      published_at: '2026-11-26T00:00:00Z',
+      body: 'Official Windows release.',
+      assets: [
+        {
+          name: 'MK-AI-Setup.exe',
+          size: 98_500_000,
+          browser_download_url:
+            'https://github.com/mk-tech/MK-AI-Pro/releases/download/v1.0.0/MK-AI-Setup.exe',
+        },
+      ],
+    },
+    'mk-tech/MK-AI-Pro',
+    shaMap
+  );
+  assert.equal(validRel.available, true);
+  assert.equal(validRel.status, 'available');
+  assert.equal(validRel.installerAsset?.name, 'MK-AI-Setup.exe');
+  assert.equal(validRel.installerAsset?.sha256, shaMap['MK-AI-Setup.exe']);
+
+  // Missing .exe asset or draft release or untrusted download host -> honest Coming Soon state
+  const emptyRel = parseGitHubReleasePayload({ draft: false, assets: [] }, 'mk-tech/MK-AI-Pro');
+  assert.equal(emptyRel.available, false);
+  assert.equal(emptyRel.status, 'coming_soon');
+  assert.equal(emptyRel.installerAsset, null);
+
+  const untrustedRel = parseGitHubReleasePayload(
+    {
+      draft: false,
+      assets: [
+        {
+          name: 'MK-AI-Setup.exe',
+          size: 1000,
+          browser_download_url: 'https://evil.example.com/MK-AI-Setup.exe',
+        },
+      ],
+    },
+    'mk-tech/MK-AI-Pro'
+  );
+  assert.equal(untrustedRel.available, false);
+  assert.equal(untrustedRel.installerAsset, null);
 });

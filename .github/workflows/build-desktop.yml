@@ -1,10 +1,19 @@
-name: Build MK AI Desktop (Windows)
+name: Build & Release MK AI Desktop (Windows)
 
 on:
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Optional release version label (e.g. v1.0.0)'
+        required: false
+        default: 'v1.0.0'
   push:
     tags:
+      - 'v*'
       - 'desktop-v*'
+
+permissions:
+  contents: write
 
 jobs:
   build-windows-installers:
@@ -20,9 +29,15 @@ jobs:
           cache: 'npm'
 
       - name: Install Node dependencies
-        run: npm ci --legacy-peer-deps
+        shell: pwsh
+        run: |
+          if (Test-Path package-lock.json) {
+            npm ci --legacy-peer-deps --no-audit --no-fund
+          } else {
+            npm install --legacy-peer-deps --no-audit --no-fund
+          }
 
-      - name: Run Desktop & Model Hub unit tests
+      - name: Run unit & security verification tests
         run: npm test
 
       - name: Build Renderer & Electron Main bundles
@@ -31,22 +46,83 @@ jobs:
       - name: Stage Online Embeddable Python Runtime
         run: node build/prepare-python-runtime.mjs
 
-      - name: Build Online Installer (MK-AI-Setup.exe)
-        run: npx electron-builder --config electron-builder.yml --win nsis
+      - name: Build Windows Installer (MK-AI-Setup.exe)
+        run: npx electron-builder --config electron-builder.yml --win nsis --publish never
 
       - name: Stage Offline Wheelhouse
         run: node build/prepare-python-runtime.mjs --offline
 
-      - name: Build Offline Installer (MK-AI-Offline-Setup.exe)
+      - name: Build Offline Windows Installer (MK-AI-Offline-Setup.exe)
         env:
           OFFLINE_INSTALLER: '1'
-        run: npx electron-builder --config electron-builder.yml --win nsis -c.win.artifactName=MK-AI-Offline-Setup.exe
+        run: npx electron-builder --config electron-builder.yml --win nsis --publish never -c.win.artifactName=MK-AI-Offline-Setup.exe
 
-      - name: Upload Windows Installer Artifacts
+      - name: Validate Generated Windows Installers & Generate Checksums
+        shell: pwsh
+        run: |
+          $artifacts = @("release/MK-AI-Setup.exe", "release/MK-AI-Offline-Setup.exe")
+          $checksumLines = @()
+          $manifestAssets = @()
+
+          foreach ($item in $artifacts) {
+            if (-not (Test-Path $item)) {
+              Write-Error "FATAL: Expected Windows installer missing: $item"
+              exit 1
+            }
+            $file = Get-Item $item
+            if ($file.Length -lt 30MB) {
+              Write-Error "FATAL: Installer $item is suspiciously small ($($file.Length) bytes)."
+              exit 1
+            }
+            $header = [System.IO.File]::ReadAllBytes($file.FullName)[0..1]
+            if ($header[0] -ne 0x4D -or $header[1] -ne 0x5A) {
+              Write-Error "FATAL: Installer $item is not a valid Windows PE executable (missing MZ header)."
+              exit 1
+            }
+            $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $checksumLines += "$hash  $($file.Name)"
+            $manifestAssets += @{
+              name = $file.Name
+              sizeBytes = $file.Length
+              sha256 = $hash
+            }
+            Write-Host "Verified $($file.Name): $($file.Length) bytes, sha256:$hash"
+          }
+
+          $checksumLines | Set-Content -Path "release/SHA256SUMS.txt" -Encoding utf8
+
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $manifest = @{
+            version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "v$($pkg.version)" }
+            generatedAt = (Get-Date).ToUniversalTime().ToString("o")
+            supportedWindows = @("Windows 10 (64-bit)", "Windows 11 (64-bit)")
+            arch = "x64"
+            assets = $manifestAssets
+          }
+          $manifest | ConvertTo-Json -Depth 4 | Set-Content -Path "release/desktop-release-manifest.json" -Encoding utf8
+
+      - name: Upload Windows Installer Workflow Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: mk-ai-desktop-windows-installers
           path: |
             release/MK-AI-Setup.exe
             release/MK-AI-Offline-Setup.exe
+            release/SHA256SUMS.txt
+            release/desktop-release-manifest.json
           retention-days: 30
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "MK AI Desktop ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            release/MK-AI-Setup.exe
+            release/MK-AI-Offline-Setup.exe
+            release/SHA256SUMS.txt
+            release/desktop-release-manifest.json

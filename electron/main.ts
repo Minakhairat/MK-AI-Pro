@@ -74,14 +74,28 @@ function detectInstallerType(): InstallerType {
 
 function validateIpcSender(event: Electron.IpcMainInvokeEvent): void {
   const senderUrl = event.senderFrame?.url || '';
+  if (!senderUrl) {
+    throw new Error('Blocked IPC call with empty sender origin.');
+  }
+  if (mainWindow && event.senderFrame !== mainWindow.webContents.mainFrame) {
+    throw new Error('Blocked IPC call from non-primary frame.');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(senderUrl);
+  } catch {
+    throw new Error(`Blocked malformed IPC sender URL: ${senderUrl}`);
+  }
+  if (parsed.protocol === 'file:') {
+    return;
+  }
   if (
-    senderUrl.startsWith('file://') ||
-    senderUrl.startsWith('http://localhost:3000') ||
-    senderUrl.startsWith('http://127.0.0.1:3000')
+    parsed.origin === 'http://localhost:3000' ||
+    parsed.origin === 'http://127.0.0.1:3000'
   ) {
     return;
   }
-  throw new Error(`Blocked unauthorized IPC sender origin: ${senderUrl || 'unknown'}`);
+  throw new Error(`Blocked unauthorized IPC sender origin: ${parsed.origin}`);
 }
 
 function registerSafeHandle<Args extends unknown[], Result>(

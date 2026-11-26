@@ -56,6 +56,7 @@ export class LocalEngineManager {
   private lastError: string | null = null;
   private intentionallyStopping = false;
   private repairInFlight: Promise<EngineRuntimeStatus> | null = null;
+  private rotationLock: Promise<void> = Promise.resolve();
 
   constructor(params: {
     storage: DesktopStorageManager;
@@ -72,6 +73,19 @@ export class LocalEngineManager {
         userDataRoot: path.dirname(params.storage.getStorageRoot()),
       });
     this.tokenManager.ensureToken();
+  }
+
+  private runWithRotationLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.rotationLock.then(fn, fn);
+    this.rotationLock = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private setSafeError(msg: string | null): void {
+    this.lastError = msg ? this.tokenManager.redactSecret(msg) : null;
   }
 
   private getLockFilePath(): string {
@@ -97,7 +111,7 @@ export class LocalEngineManager {
     this.port = port;
   }
 
-  async checkHealth(): Promise<{
+  async checkHealth(opts: { bypassRotationLock?: boolean } = {}): Promise<{
     healthy: boolean;
     version: string | null;
     tokenProtected: boolean;
@@ -112,6 +126,9 @@ export class LocalEngineManager {
         tokenProtected: false,
         tokenConfigured: false,
       };
+    }
+    if (!opts.bypassRotationLock) {
+      await this.rotationLock;
     }
     const { token } = this.tokenManager.ensureToken();
     try {
@@ -187,7 +204,6 @@ export class LocalEngineManager {
       }
     }
 
-    // Prevent duplicate orphaned instances from prior runs
     const lockPath = this.getLockFilePath();
     if (fs.existsSync(lockPath)) {
       try {
@@ -207,7 +223,7 @@ export class LocalEngineManager {
 
     const probe = await this.runtime.inspectRuntime();
     if (!probe.ready || !probe.pythonExecutable) {
-      this.lastError = 'Isolated Python runtime is missing or uninitialized.';
+      this.setSafeError('Isolated Python runtime is missing or uninitialized.');
       return this.getStatus();
     }
 
@@ -220,13 +236,13 @@ export class LocalEngineManager {
     }
 
     this.intentionallyStopping = false;
-    this.lastError = null;
+    this.setSafeError(null);
     this.port = await findFreeLoopbackPort(8765);
     this.startedAt = new Date().toISOString();
 
     const mainPy = path.join(this.aiEngineDir, 'main.py');
     if (!fs.existsSync(mainPy)) {
-      this.lastError = `Missing FastAPI entrypoint at ${mainPy}`;
+      this.setSafeError(`Missing FastAPI entrypoint at ${mainPy}`);
       return this.getStatus();
     }
 
@@ -283,8 +299,10 @@ export class LocalEngineManager {
       fs.rmSync(lockPath, { force: true });
       this.proc = null;
       if (!this.intentionallyStopping) {
-        this.lastError = `Local AI Engine exited unexpectedly (code=${code}, signal=${signal}).`;
-        this.storage.appendLog('ai-engine.log', this.lastError);
+        this.setSafeError(
+          `Local AI Engine exited unexpectedly (code=${code}, signal=${signal}).`
+        );
+        this.storage.appendLog('ai-engine.log', this.lastError || 'Engine exited unexpectedly.');
         if (this.restartCount < 3) {
           this.restartCount += 1;
           setTimeout(() => {
@@ -294,12 +312,11 @@ export class LocalEngineManager {
       }
     });
 
-    // Wait up to 15 seconds for /health and authenticated /capabilities to pass
     for (let i = 0; i < 30; i++) {
       const h = await this.checkHealth();
       if (h.healthy) {
         if (!h.tokenConfigured) {
-          this.lastError = 'Local AI Engine started without an active security token; repairing.';
+          this.setSafeError('Local AI Engine started without an active security token; repairing.');
           return this.repairTokenAndRestart('python_engine_missing_token');
         }
         return this.getStatus();
@@ -307,7 +324,7 @@ export class LocalEngineManager {
       await new Promise((r) => setTimeout(r, 500));
     }
 
-    this.lastError = 'Local FastAPI AI Engine timed out before passing health check.';
+    this.setSafeError('Local FastAPI AI Engine timed out before passing health check.');
     return this.getStatus();
   }
 
@@ -342,7 +359,9 @@ export class LocalEngineManager {
       return this.repairInFlight;
     }
     this.repairInFlight = (async () => {
-      const rotated = this.tokenManager.rotateToken(reason);
+      const rotated = await this.runWithRotationLock(async () =>
+        this.tokenManager.rotateToken(reason)
+      );
       this.storage.appendLog(
         'ai-engine.log',
         `Regenerated local engine credential (${reason}; fingerprint ${rotated.status.fingerprintSha256Prefix}). Restarting engine.`
@@ -359,77 +378,99 @@ export class LocalEngineManager {
     engineSynced: boolean;
     restarted: boolean;
   }> {
-    const { previousToken, nextToken, status } = this.tokenManager.rotateToken();
-    const baseUrl = this.getBaseUrl();
+    return this.runWithRotationLock(async () => {
+      const { previousToken, candidateToken } = this.tokenManager.prepareRotationCandidate();
+      const baseUrl = this.getBaseUrl();
 
-    if (baseUrl && previousToken) {
-      try {
-        const res = await fetch(`${baseUrl}/security/rotate-token`, {
-          method: 'POST',
-          headers: this.getTokenHeaders(previousToken, true),
-          body: JSON.stringify({ new_token: nextToken }),
-          signal: AbortSignal.timeout(5000),
-        });
-        if (res.ok) {
-          // Verify new token works immediately on authenticated /capabilities
-          const verifyRes = await fetch(`${baseUrl}/capabilities`, {
-            method: 'GET',
-            headers: this.getTokenHeaders(nextToken, false),
+      if (baseUrl && previousToken) {
+        try {
+          // Step 1: Rotate inside running FastAPI engine using current valid token BEFORE flipping local state
+          const res = await fetch(`${baseUrl}/security/rotate-token`, {
+            method: 'POST',
+            headers: this.getTokenHeaders(previousToken, true),
+            body: JSON.stringify({ new_token: candidateToken }),
             signal: AbortSignal.timeout(5000),
           });
-          if (verifyRes.ok) {
-            this.tokenManager.markVerified();
-            this.storage.appendLog(
-              'ai-engine.log',
-              `Rotated and live-synchronized engine security token (${this.tokenManager.getPublicStatus().fingerprintSha256Prefix}).`
-            );
-            return {
-              status: this.tokenManager.getPublicStatus(),
-              engineSynced: true,
-              restarted: false,
-            };
+          if (res.ok) {
+            // Step 2: Verify candidate token works immediately on authenticated /capabilities
+            const verifyRes = await fetch(`${baseUrl}/capabilities`, {
+              method: 'GET',
+              headers: this.getTokenHeaders(candidateToken, false),
+              signal: AbortSignal.timeout(5000),
+            });
+            if (verifyRes.ok) {
+              // Step 3: Commit rotated token atomically only after Python confirms & accepts it
+              this.tokenManager.commitRotatedToken(candidateToken);
+              this.tokenManager.markVerified();
+              const committedStatus = this.tokenManager.getPublicStatus();
+              this.storage.appendLog(
+                'ai-engine.log',
+                `Rotated and live-synchronized engine security token (${committedStatus.fingerprintSha256Prefix}).`
+              );
+              return {
+                status: committedStatus,
+                engineSynced: true,
+                restarted: false,
+              };
+            }
           }
+        } catch {
+          // Fall through to clean restart with newly committed token
         }
-      } catch {
-        // Fall through to clean restart with new token
       }
-    }
 
-    // Fallback or cold engine: restart engine cleanly with the newly persisted token
-    if (this.proc && isProcessAlive(this.proc.pid ?? -1)) {
-      const restartedStatus = await this.restart();
+      const committedStatus = this.tokenManager.commitRotatedToken(candidateToken);
+      if (this.proc && isProcessAlive(this.proc.pid ?? -1)) {
+        const restartedStatus = await this.restart();
+        return {
+          status: restartedStatus.tokenStatus ?? committedStatus,
+          engineSynced: restartedStatus.healthy,
+          restarted: true,
+        };
+      }
+
       return {
-        status: restartedStatus.tokenStatus ?? status,
-        engineSynced: restartedStatus.healthy,
-        restarted: true,
+        status: committedStatus,
+        engineSynced: false,
+        restarted: false,
       };
-    }
-
-    return {
-      status,
-      engineSynced: false,
-      restarted: false,
-    };
+    });
   }
 
   async requestJson<T = Record<string, unknown>>(
     endpoint: string,
-    init: { method?: 'GET' | 'POST' | 'DELETE'; body?: unknown; timeoutMs?: number; retryOnAuth?: boolean } = {}
+    init: {
+      method?: 'GET' | 'POST' | 'DELETE';
+      body?: unknown;
+      timeoutMs?: number;
+      retryOnAuth?: boolean;
+    } = {}
   ): Promise<T> {
     const baseUrl = this.getBaseUrl();
     if (!baseUrl) {
       throw new Error('Local AI Engine is not running.');
     }
     const cleanPath = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-    const { token } = this.tokenManager.ensureToken();
+
+    // Wait for any live token rotation lock so concurrent calls pick up the newly synchronized token cleanly
+    await this.rotationLock;
+    const { token: tokenSent } = this.tokenManager.ensureToken();
+
     const res = await fetch(`${baseUrl}${cleanPath}`, {
       method: init.method ?? 'GET',
-      headers: this.getTokenHeaders(token, init.body !== undefined),
+      headers: this.getTokenHeaders(tokenSent, init.body !== undefined),
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
       signal: AbortSignal.timeout(init.timeoutMs ?? 15000),
     });
 
     if ((res.status === 401 || res.status === 503) && init.retryOnAuth !== false) {
+      await this.rotationLock;
+      const currentAfterLock = this.tokenManager.ensureToken().token;
+      // If a concurrent rotation completed cleanly while this request was in-flight, retry with the fresh token without restarting Python!
+      if (currentAfterLock !== tokenSent) {
+        return this.requestJson<T>(endpoint, { ...init, retryOnAuth: false });
+      }
+
       const errPayload = (await res.json().catch(() => ({}))) as { detail?: string };
       const detailStr = String(errPayload.detail || '').toLowerCase();
       if (res.status === 401 || detailStr.includes('token')) {
@@ -438,7 +479,7 @@ export class LocalEngineManager {
           return this.requestJson<T>(endpoint, { ...init, retryOnAuth: false });
         }
       }
-      throw new Error(errPayload.detail || `HTTP ${res.status}`);
+      throw new Error(this.tokenManager.redactSecret(errPayload.detail || `HTTP ${res.status}`));
     }
 
     const payload = await res.json().catch(() => ({}));
@@ -447,7 +488,7 @@ export class LocalEngineManager {
         typeof (payload as { detail?: string }).detail === 'string'
           ? (payload as { detail: string }).detail
           : `HTTP ${res.status}`;
-      throw new Error(detail);
+      throw new Error(this.tokenManager.redactSecret(detail));
     }
     return payload as T;
   }

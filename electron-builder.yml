@@ -25,6 +25,11 @@ extraResources:
     filter:
       - '**/*'
 asar: true
+publish:
+  provider: github
+  owner: mk-tech
+  repo: MK-AI-Pro
+  releaseType: release
 win:
   target:
     - target: nsis
@@ -39,5 +44,6 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: MK AI Desktop
+  uninstallDisplayName: MK AI Desktop (MK Tech)
   include: build/installer.nsh
   deleteAppDataOnUninstall: false

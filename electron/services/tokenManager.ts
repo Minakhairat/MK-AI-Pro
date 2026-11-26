@@ -29,9 +29,10 @@ interface StoredCredentialEnvelope {
 export function isValidEngineToken(token: string | null | undefined): token is string {
   if (typeof token !== 'string') return false;
   const trimmed = token.trim();
+  if (trimmed !== token) return false;
   if (trimmed.length < 32 || trimmed.length > 256) return false;
   if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) return false;
-  // Reject degenerate single-character repeated strings
+  // Reject degenerate repeated-character strings
   if (new Set(trimmed).size < 8) return false;
   return true;
 }
@@ -60,7 +61,6 @@ export function createElectronSafeStorageBackend(safeStorageApi?: {
     };
   }
 
-  // Fallback for environments where OS keychain encryption is unavailable (e.g. headless Linux / CLI test runner)
   return {
     mode: 'restricted_local_store',
     isAvailable: () => false,
@@ -72,10 +72,14 @@ export function createElectronSafeStorageBackend(safeStorageApi?: {
 export class EngineTokenManager {
   private securityDir: string;
   private credentialPath: string;
+  private masterKeyPath: string;
   private backend: SecretProtectionBackend;
   private activeToken: string | null = null;
   private sessionSeenTokens = new Set<string>();
-  private metadata: Omit<StoredCredentialEnvelope, 'version' | 'encryptedPayloadBase64' | 'ivBase64' | 'authTagBase64' | 'saltHex'> = {
+  private metadata: Omit<
+    StoredCredentialEnvelope,
+    'version' | 'encryptedPayloadBase64' | 'ivBase64' | 'authTagBase64' | 'saltHex'
+  > = {
     protectionMode: 'restricted_local_store',
     createdAt: new Date().toISOString(),
     rotatedAt: null,
@@ -87,18 +91,44 @@ export class EngineTokenManager {
   constructor(params: { userDataRoot: string; backend?: SecretProtectionBackend }) {
     this.securityDir = resolveConfinedPath(path.resolve(params.userDataRoot), 'security');
     this.credentialPath = resolveConfinedPath(this.securityDir, 'mk-engine-credential.dat');
+    this.masterKeyPath = resolveConfinedPath(this.securityDir, 'mk-engine-master.key');
     this.backend = params.backend ?? createElectronSafeStorageBackend();
     this.metadata.protectionMode = this.backend.mode;
     fs.mkdirSync(this.securityDir, { recursive: true, mode: 0o700 });
     try {
       fs.chmodSync(this.securityDir, 0o700);
     } catch {
-      // Ignore chmod restriction on Windows NTFS
+      // Ignore chmod limitation on Windows NTFS
     }
   }
 
-  private deriveLocalWrappingKey(saltHex: string): Buffer {
-    const context = `${os.hostname()}|${os.userInfo().username}|${this.securityDir}`;
+  private getOrCreateLocalMasterKeyHex(): string {
+    if (fs.existsSync(this.masterKeyPath)) {
+      const existing = fs.readFileSync(this.masterKeyPath, 'utf8').trim();
+      if (/^[a-f0-9]{64}$/i.test(existing)) {
+        return existing;
+      }
+    }
+    const freshKeyHex = crypto.randomBytes(32).toString('hex');
+    const tmp = `${this.masterKeyPath}.tmp`;
+    fs.writeFileSync(tmp, freshKeyHex, { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tmp, this.masterKeyPath);
+    try {
+      fs.chmodSync(this.masterKeyPath, 0o600);
+    } catch {
+      // Ignore chmod limitation on Windows NTFS
+    }
+    return freshKeyHex;
+  }
+
+  private readExistingLocalMasterKeyHex(): string | null {
+    if (!fs.existsSync(this.masterKeyPath)) return null;
+    const raw = fs.readFileSync(this.masterKeyPath, 'utf8').trim();
+    return /^[a-f0-9]{64}$/i.test(raw) ? raw : null;
+  }
+
+  private deriveLocalWrappingKey(saltHex: string, masterKeyHex: string): Buffer {
+    const context = `${os.hostname()}|${os.userInfo().username}|${this.securityDir}|${masterKeyHex}`;
     return crypto.scryptSync(context, saltHex, 32);
   }
 
@@ -118,10 +148,13 @@ export class EngineTokenManager {
         lastRepairReason: meta.lastRepairReason,
         repairCount: meta.repairCount,
       };
+      // Remove legacy fallback master key once protected by OS vault
+      fs.rmSync(this.masterKeyPath, { force: true });
     } else {
       const saltHex = crypto.randomBytes(16).toString('hex');
       const iv = crypto.randomBytes(12);
-      const key = this.deriveLocalWrappingKey(saltHex);
+      const masterKeyHex = this.getOrCreateLocalMasterKeyHex();
+      const key = this.deriveLocalWrappingKey(saltHex, masterKeyHex);
       const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
       const encrypted = Buffer.concat([cipher.update(token, 'utf8'), cipher.final()]);
       const authTag = cipher.getAuthTag();
@@ -146,7 +179,7 @@ export class EngineTokenManager {
     try {
       fs.chmodSync(this.credentialPath, 0o600);
     } catch {
-      // Ignore chmod restriction on Windows NTFS
+      // Ignore chmod limitation on Windows NTFS
     }
     this.activeToken = token;
     this.sessionSeenTokens.add(token);
@@ -168,7 +201,9 @@ export class EngineTokenManager {
         decrypted = this.backend.unprotect(Buffer.from(env.encryptedPayloadBase64, 'base64'));
       } else {
         if (!env.saltHex || !env.ivBase64 || !env.authTagBase64) return null;
-        const key = this.deriveLocalWrappingKey(env.saltHex);
+        const masterKeyHex = this.readExistingLocalMasterKeyHex();
+        if (!masterKeyHex) return null;
+        const key = this.deriveLocalWrappingKey(env.saltHex, masterKeyHex);
         const decipher = crypto.createDecipheriv(
           'aes-256-gcm',
           key,
@@ -207,7 +242,7 @@ export class EngineTokenManager {
     if (loaded) {
       this.activeToken = loaded.token;
       this.sessionSeenTokens.add(loaded.token);
-      this.metadata = {
+      const baseMeta: typeof this.metadata = {
         protectionMode: loaded.envelope.protectionMode,
         createdAt: loaded.envelope.createdAt || new Date().toISOString(),
         rotatedAt: loaded.envelope.rotatedAt ?? null,
@@ -215,6 +250,20 @@ export class EngineTokenManager {
         lastRepairReason: loaded.envelope.lastRepairReason ?? null,
         repairCount: loaded.envelope.repairCount ?? 0,
       };
+
+      // Automatically upgrade fallback-encrypted token back into OS vault once OS keychain/DPAPI is available
+      if (
+        loaded.envelope.protectionMode === 'restricted_local_store' &&
+        this.backend.mode === 'os_dpapi_keychain'
+      ) {
+        this.writeEnvelope(loaded.token, {
+          ...baseMeta,
+          protectionMode: 'os_dpapi_keychain',
+        });
+      } else {
+        this.metadata = baseMeta;
+      }
+
       return {
         token: loaded.token,
         status: this.getPublicStatus(),
@@ -223,7 +272,6 @@ export class EngineTokenManager {
       };
     }
 
-    // Generate or automatically repair missing/corrupted credential
     const freshToken = this.generateSecureToken();
     const now = new Date().toISOString();
     const meta: typeof this.metadata = {
@@ -243,6 +291,35 @@ export class EngineTokenManager {
     };
   }
 
+  prepareRotationCandidate(): { previousToken: string; candidateToken: string } {
+    const previous = this.ensureToken().token;
+    let candidate = this.generateSecureToken();
+    while (candidate === previous) {
+      candidate = this.generateSecureToken();
+    }
+    this.sessionSeenTokens.add(candidate);
+    return { previousToken: previous, candidateToken: candidate };
+  }
+
+  commitRotatedToken(nextToken: string, repairReason?: string): EngineTokenStatus {
+    if (!isValidEngineToken(nextToken)) {
+      throw new Error('Cannot commit invalid replacement engine token.');
+    }
+    if (this.activeToken) {
+      this.sessionSeenTokens.add(this.activeToken);
+    }
+    const now = new Date().toISOString();
+    this.writeEnvelope(nextToken, {
+      protectionMode: this.backend.mode,
+      createdAt: this.metadata.createdAt || now,
+      rotatedAt: now,
+      lastVerifiedAt: null,
+      lastRepairReason: repairReason ?? this.metadata.lastRepairReason,
+      repairCount: repairReason ? this.metadata.repairCount + 1 : this.metadata.repairCount,
+    });
+    return this.getPublicStatus();
+  }
+
   rotateToken(repairReason?: string): {
     previousToken: string | null;
     nextToken: string;
@@ -255,22 +332,15 @@ export class EngineTokenManager {
       this.sessionSeenTokens.add(previousToken);
     }
 
-    const nextToken = this.generateSecureToken();
-    const now = new Date().toISOString();
-    const nextMeta: typeof this.metadata = {
-      protectionMode: this.backend.mode,
-      createdAt: this.metadata.createdAt || now,
-      rotatedAt: now,
-      lastVerifiedAt: null,
-      lastRepairReason: repairReason ?? this.metadata.lastRepairReason,
-      repairCount: repairReason ? this.metadata.repairCount + 1 : this.metadata.repairCount,
-    };
-    this.writeEnvelope(nextToken, nextMeta);
-
+    let nextToken = this.generateSecureToken();
+    while (nextToken === previousToken) {
+      nextToken = this.generateSecureToken();
+    }
+    const status = this.commitRotatedToken(nextToken, repairReason);
     return {
       previousToken,
       nextToken,
-      status: this.getPublicStatus(),
+      status,
     };
   }
 
@@ -281,6 +351,14 @@ export class EngineTokenManager {
       ...this.metadata,
       lastVerifiedAt: now,
     });
+  }
+
+  clearCredentials(): void {
+    this.activeToken = null;
+    fs.rmSync(this.credentialPath, { force: true });
+    fs.rmSync(this.masterKeyPath, { force: true });
+    fs.rmSync(`${this.credentialPath}.tmp`, { force: true });
+    fs.rmSync(`${this.masterKeyPath}.tmp`, { force: true });
   }
 
   getPublicStatus(): EngineTokenStatus {

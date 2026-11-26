@@ -74,10 +74,14 @@ except ImportError:
     paddleocr = None  # type: ignore
 
 ENGINE_VERSION = "2.1.0-desktop"
+IS_DESKTOP_MODE = os.environ.get("MK_DESKTOP_MODE") == "1"
 app = FastAPI(
     title="MK AI Training Engine",
     description="Computer Vision AI Training & Inference Service by MK Tech",
     version=ENGINE_VERSION,
+    docs_url=None if IS_DESKTOP_MODE else "/docs",
+    redoc_url=None if IS_DESKTOP_MODE else "/redoc",
+    openapi_url=None if IS_DESKTOP_MODE else "/openapi.json",
 )
 
 START_TIME = time.time()
@@ -94,8 +98,12 @@ JOB_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
 ENGINE_TOKEN = os.environ.get("MK_ENGINE_TOKEN", "").strip()
 TOKEN_LOCK = threading.Lock()
 ALLOWED_LOCAL_ORIGIN_RE = re.compile(
-    r"^(https?://(127\.0\.0\.1|localhost)(:\d+)?|file://|app://.*|null)$", re.IGNORECASE
+    r"^https?://(127\.0\.0\.1|localhost)(:\d{1,5})?$", re.IGNORECASE
 )
+ALLOWED_LOCAL_HOST_RE = re.compile(
+    r"^(127\.0\.0\.1|localhost|testserver)(:\d{1,5})?$", re.IGNORECASE
+)
+STRICT_BEARER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_\-]{16,256}$")
 
 
 def _get_engine_token() -> str:
@@ -113,14 +121,20 @@ def _is_valid_bearer_header(auth_header: str) -> bool:
     current = _get_engine_token()
     if len(current) < 16 or not auth_header.startswith("Bearer "):
         return False
-    provided = auth_header[7:].strip()
+    provided = auth_header[7:]
+    if not STRICT_BEARER_TOKEN_RE.match(provided):
+        return False
     return secrets.compare_digest(provided, current)
 
 
 @app.middleware("http")
 async def local_security_middleware(request: Request, call_next: Any):
+    host = request.headers.get("host")
+    if host and not ALLOWED_LOCAL_HOST_RE.match(host.strip()):
+        return JSONResponse(status_code=403, content={"detail": "Disallowed Host header for local AI Engine."})
+
     origin = request.headers.get("origin")
-    if origin and not ALLOWED_LOCAL_ORIGIN_RE.match(origin.strip()):
+    if origin is not None and not ALLOWED_LOCAL_ORIGIN_RE.match(origin.strip()):
         return JSONResponse(status_code=403, content={"detail": "Disallowed origin for local AI Engine."})
 
     if request.url.path != "/health":
@@ -690,10 +704,20 @@ def health(request: Request) -> Dict[str, Any]:
 @app.post("/security/rotate-token")
 def rotate_engine_token(req: RotateTokenRequest) -> Dict[str, Any]:
     candidate = req.new_token.strip()
-    if len(candidate) < 32 or not re.match(r"^[A-Za-z0-9_\-]+$", candidate) or len(set(candidate)) < 8:
+    if (
+        candidate != req.new_token
+        or len(candidate) < 32
+        or not re.match(r"^[A-Za-z0-9_\-]+$", candidate)
+        or len(set(candidate)) < 8
+    ):
         raise HTTPException(
             status_code=400,
             detail="Replacement token does not meet security format requirements.",
+        )
+    if secrets.compare_digest(candidate, _get_engine_token()):
+        raise HTTPException(
+            status_code=400,
+            detail="Replacement token must differ from the active engine token.",
         )
     _set_engine_token(candidate)
     return {

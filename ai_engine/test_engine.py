@@ -68,7 +68,7 @@ class TestMkAiEngine(unittest.TestCase):
             r_unauth = client.get("/capabilities")
             self.assertEqual(r_unauth.status_code, 401)
 
-            # External origin must be blocked with 403
+            # External origin and null origin must be blocked with 403
             r_bad_origin = client.get(
                 "/capabilities",
                 headers={
@@ -77,6 +77,32 @@ class TestMkAiEngine(unittest.TestCase):
                 },
             )
             self.assertEqual(r_bad_origin.status_code, 403)
+
+            r_null_origin = client.get(
+                "/capabilities",
+                headers={
+                    "Authorization": f"Bearer {initial_token}",
+                    "Origin": "null",
+                },
+            )
+            self.assertEqual(r_null_origin.status_code, 403)
+
+            # DNS rebinding Host header must be blocked with 403
+            r_bad_host = client.get(
+                "/capabilities",
+                headers={
+                    "Authorization": f"Bearer {initial_token}",
+                    "Host": "evil.attacker.example:8765",
+                },
+            )
+            self.assertEqual(r_bad_host.status_code, 403)
+
+            # Malformed Bearer token with extra spaces must return 401
+            r_malformed = client.get(
+                "/capabilities",
+                headers={"Authorization": f"Bearer  {initial_token} "},
+            )
+            self.assertEqual(r_malformed.status_code, 401)
 
             # Valid token + local origin succeeds
             r_ok = client.get(
@@ -88,6 +114,14 @@ class TestMkAiEngine(unittest.TestCase):
             )
             self.assertEqual(r_ok.status_code, 200)
             self.assertIn("supported_architectures", r_ok.json())
+
+            # Rotating to the identical active token must fail with 400
+            r_same_rot = client.post(
+                "/security/rotate-token",
+                headers={"Authorization": f"Bearer {initial_token}"},
+                json={"new_token": initial_token},
+            )
+            self.assertEqual(r_same_rot.status_code, 400)
 
             # Live token rotation invalidates previous token and activates new token immediately
             rotated_token = "mk_test_rotated_secure_token_0987654321"
