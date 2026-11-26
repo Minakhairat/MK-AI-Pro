@@ -1,23 +1,57 @@
 import React, { useEffect, useState } from 'react';
-import { CheckCircle2, CreditCard, Shield, UserCheck } from 'lucide-react';
+import {
+  CheckCircle2,
+  CreditCard,
+  HardDrive,
+  RefreshCw,
+  Shield,
+  UploadCloud,
+  UserCheck,
+} from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useI18n } from '../../contexts/I18nContext';
+import { useNotifications } from '../../contexts/NotificationContext';
 import { verifyServerSession } from '../../lib/apiClient';
+import {
+  type MobileStorageQuotaSummary,
+  type OfflineSyncQueueEntry,
+  flushOfflineSyncQueue,
+  getMobileStorageQuota,
+  listOfflineSyncQueue,
+} from '../../lib/mobileOfflineStore';
 import { updateUserPreferences } from '../../services/firestoreService';
+import { PWAInstallButton } from '../common/PWAInstallButton';
 
 export function AccountSettingsView() {
   const { user, profile } = useAuth();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const { pushNotification } = useNotifications();
 
   const [displayName, setDisplayName] = useState(profile?.displayName || user?.displayName || '');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sessionResult, setSessionResult] = useState<string | null>(null);
+  const [quota, setQuota] = useState<MobileStorageQuotaSummary | null>(null);
+  const [queue, setQueue] = useState<OfflineSyncQueueEntry[]>([]);
+  const [syncingQueue, setSyncingQueue] = useState(false);
+
+  const loadStorageInfo = async () => {
+    const [q, items] = await Promise.all([
+      getMobileStorageQuota(),
+      listOfflineSyncQueue(),
+    ]);
+    setQuota(q);
+    setQueue(items);
+  };
 
   useEffect(() => {
     setDisplayName(profile?.displayName || user?.displayName || '');
   }, [profile, user]);
+
+  useEffect(() => {
+    void loadStorageInfo();
+  }, []);
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -173,6 +207,79 @@ export function AccountSettingsView() {
           >
             {t.settingsView.verifySessionBtn}
           </button>
+        </div>
+      </div>
+
+      {/* Mobile PWA Install, Device Storage Quota & Offline Queue */}
+      <div className="border border-zinc-200 dark:border-zinc-800 rounded-xl p-6 bg-white dark:bg-zinc-900 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 font-display font-semibold text-base">
+            <HardDrive className="w-4 h-4 text-red-600 dark:text-red-500" />
+            <h2>
+              {locale === 'ar'
+                ? 'تطبيق الويب التقدمي والتخزين المحلي (PWA)'
+                : 'PWA Offline Storage & Sync Queue'}
+            </h2>
+          </div>
+          <PWAInstallButton />
+        </div>
+
+        {quota?.supported && (
+          <div className="space-y-1.5 text-xs tabular-nums">
+            <div className="flex justify-between font-mono text-zinc-600 dark:text-zinc-400">
+              <span>
+                Used: {(quota.usageBytes / (1024 * 1024)).toFixed(1)} MB
+              </span>
+              <span>
+                Browser Quota: {(quota.quotaBytes / (1024 * 1024)).toFixed(0)} MB ({quota.percentUsed}%)
+              </span>
+            </div>
+            <div className="h-2 rounded-full bg-zinc-200 dark:bg-zinc-800 overflow-hidden">
+              <div
+                style={{ width: `${Math.min(100, quota.percentUsed)}%` }}
+                className="h-full bg-red-600"
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-zinc-100 dark:border-zinc-800 text-xs">
+          <span className="font-mono text-zinc-600 dark:text-zinc-400">
+            Pending Offline Queue Entries: {queue.length}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void loadStorageInfo()}
+              className="px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 inline-flex items-center gap-1.5 font-semibold"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Refresh</span>
+            </button>
+            <button
+              type="button"
+              disabled={queue.length === 0 || syncingQueue}
+              onClick={() => {
+                setSyncingQueue(true);
+                void flushOfflineSyncQueue()
+                  .then((res) => {
+                    if (res.succeeded > 0) {
+                      pushNotification({
+                        category: 'sync_completed',
+                        title: 'Offline Queue Synced',
+                        body: `${res.succeeded} queued item(s) synced.`,
+                      });
+                    }
+                    return loadStorageInfo();
+                  })
+                  .finally(() => setSyncingQueue(false));
+              }}
+              className="px-3 py-1.5 rounded-lg bg-red-600 text-white font-semibold inline-flex items-center gap-1.5 disabled:opacity-45"
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              <span>{syncingQueue ? 'Syncing...' : 'Sync Queue Now'}</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

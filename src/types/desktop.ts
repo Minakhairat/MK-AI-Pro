@@ -243,6 +243,33 @@ export interface DesktopStagedDatasetResult {
   stagedCount: number;
 }
 
+export interface PairingCodeChallenge {
+  code: string;
+  createdAt: string;
+  expiresAt: string;
+  relayUrl: string | null;
+  relayEnabled: boolean;
+}
+
+export interface PairedDeviceSummary {
+  deviceId: string;
+  deviceName: string;
+  pairedAt: string;
+  expiresAt: string;
+  lastSeenAt: string | null;
+  revoked: boolean;
+  scopes: string[];
+}
+
+export interface PairingRelayStatus {
+  enabled: boolean;
+  listening: boolean;
+  port: number | null;
+  lanUrls: string[];
+  activeChallenge: PairingCodeChallenge | null;
+  devices: PairedDeviceSummary[];
+}
+
 export interface MkDesktopApi {
   getRuntimeInfo: () => Promise<DesktopRuntimeInfo>;
   getConfig: () => Promise<DesktopConfig>;
@@ -302,6 +329,10 @@ export interface MkDesktopApi {
   exportDiagnosticReport: () => Promise<{ savedPath: string; reportJson: string }>;
   saveLocalProjectMetadata: (project: Record<string, unknown>) => Promise<{ ok: boolean }>;
   listLocalProjectMetadata: () => Promise<Record<string, unknown>[]>;
+  getPairingStatus: () => Promise<PairingRelayStatus>;
+  createPairingCode: () => Promise<PairingCodeChallenge>;
+  setPairingRelayEnabled: (enabled: boolean) => Promise<PairingRelayStatus>;
+  revokePairedDevice: (deviceId: string) => Promise<PairingRelayStatus>;
   onSetupProgress: (cb: (state: SetupWizardState) => void) => () => void;
   onDependencyProgress: (cb: (progress: DependencyInstallProgress) => void) => () => void;
 }

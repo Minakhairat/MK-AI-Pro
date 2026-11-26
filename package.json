@@ -13,9 +13,9 @@
     "lint": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "build:electron": "esbuild electron/main.ts --bundle --platform=node --format=cjs --outfile=dist-electron/main.cjs --external:electron && esbuild electron/preload.ts --bundle --platform=node --format=cjs --outfile=dist-electron/preload.cjs --external:electron",
-    "desktop:build": "ELECTRON_BUILD=true VITE_BASE_PATH=./ npm run build && npm run build:electron",
-    "desktop:dist:online": "npm run desktop:build && npx electron-builder --config electron-builder.yml --win nsis",
-    "desktop:dist:offline": "OFFLINE_INSTALLER=1 npm run desktop:build && npx electron-builder --config electron-builder.yml --win nsis"
+    "desktop:build": "node build/run-desktop-build.mjs",
+    "desktop:dist:online": "node build/run-desktop-build.mjs && npx electron-builder --config electron-builder.yml --win nsis",
+    "desktop:dist:offline": "node build/run-desktop-build.mjs --offline && npx electron-builder --config electron-builder.yml --win nsis -c.win.artifactName=MK-AI-Offline-Setup.exe"
   },
   "dependencies": {
     "@firebase/eslint-plugin-security-rules": "^0.0.2",

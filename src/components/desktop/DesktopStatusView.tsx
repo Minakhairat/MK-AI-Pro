@@ -8,11 +8,13 @@ import {
   FolderOpen,
   HardDrive,
   KeyRound,
+  Link2,
   Monitor,
   Power,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
+  Smartphone,
   Trash2,
   Wrench,
 } from 'lucide-react';
@@ -33,6 +35,8 @@ import type {
   EngineRuntimeStatus,
   EngineTokenStatus,
   HardwareReport,
+  PairingCodeChallenge,
+  PairingRelayStatus,
   StorageSubdirName,
   StorageUsageSummary,
   UpdateCheckReport,
@@ -62,6 +66,8 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
   const [storageUsage, setStorageUsage] = useState<StorageUsageSummary | null>(null);
   const [localWeights, setLocalWeights] = useState<DesktopWeightRecord[]>([]);
   const [updateReport, setUpdateReport] = useState<UpdateCheckReport | null>(null);
+  const [pairingStatus, setPairingStatus] = useState<PairingRelayStatus | null>(null);
+  const [activeChallenge, setActiveChallenge] = useState<PairingCodeChallenge | null>(null);
 
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -74,7 +80,7 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
     const bridge = getDesktopBridge();
     if (!bridge) return;
     try {
-      const [info, cfg, eng, tok, hw, usage, weights, updates] = await Promise.all([
+      const [info, cfg, eng, tok, hw, usage, weights, updates, pairing] = await Promise.all([
         bridge.getRuntimeInfo(),
         bridge.getConfig(),
         bridge.getEngineStatus(),
@@ -83,6 +89,7 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
         bridge.getStorageUsage(),
         bridge.listLocalWeights(),
         bridge.checkForUpdates(),
+        bridge.getPairingStatus().catch(() => null),
       ]);
       setRuntimeInfo(info);
       setConfig(cfg);
@@ -92,6 +99,10 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
       setStorageUsage(usage);
       setLocalWeights(weights);
       setUpdateReport(updates);
+      if (pairing) {
+        setPairingStatus(pairing);
+        setActiveChallenge(pairing.activeChallenge);
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Failed loading Desktop status.');
     }
@@ -896,6 +907,149 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
             ))}
           </div>
         )}
+      </section>
+
+      {/* Mobile PWA Companion Pairing & LAN Relay */}
+      <section className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 space-y-4 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <h2 className="text-sm font-display font-semibold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+              <Smartphone className="w-4 h-4 text-red-600" />
+              <span>
+                {locale === 'ar'
+                  ? 'اقتران تطبيق الهاتف (MK AI Mobile PWA)'
+                  : 'Mobile PWA Companion Pairing'}
+              </span>
+            </h2>
+            <p className="text-[11px] text-zinc-500">
+              {locale === 'ar'
+                ? 'ينشئ رمز اقتران مؤقتاً يُستبدل بتوكن جهاز مستقل دون كشف بيانات اعتماد المحرك المحلي أبداً.'
+                : 'Generates a short-lived pairing code exchanged for a revocable device token. Desktop engine credentials never leave Desktop.'}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={Boolean(pairingStatus?.enabled)}
+                disabled={busyAction !== null}
+                onChange={(e) =>
+                  void runAction('pairingRelay', async () => {
+                    const next = await getDesktopBridge()!.setPairingRelayEnabled(e.target.checked);
+                    setPairingStatus(next);
+                    setActiveChallenge(next.activeChallenge);
+                    setNotice(
+                      e.target.checked
+                        ? 'Companion LAN relay enabled.'
+                        : 'Companion LAN relay stopped.'
+                    );
+                  })
+                }
+                className="accent-red-600"
+              />
+              <span className="font-semibold">
+                {locale === 'ar' ? 'تفعيل خادم الاقتران على الشبكة' : 'Enable LAN Relay'}
+              </span>
+            </label>
+
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() =>
+                void runAction('createPairCode', async () => {
+                  const ch = await getDesktopBridge()!.createPairingCode();
+                  setActiveChallenge(ch);
+                  const st = await getDesktopBridge()!.getPairingStatus();
+                  setPairingStatus(st);
+                  setNotice('Generated a 5-minute single-use pairing code.');
+                })
+              }
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50"
+            >
+              <Link2 className="w-3.5 h-3.5" />
+              <span>
+                {locale === 'ar' ? 'إنشاء رمز اقتران' : 'Generate Pairing Code'}
+              </span>
+            </button>
+          </div>
+        </div>
+
+        {(pairingStatus?.lanUrls?.length || 0) > 0 && (
+          <div className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 font-mono text-[11px] space-y-1">
+            <div className="text-zinc-500">LAN Relay Endpoint(s):</div>
+            {pairingStatus!.lanUrls.map((url) => (
+              <div key={url} className="text-zinc-900 dark:text-zinc-100 select-all">
+                {url}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {activeChallenge && (
+          <div className="p-4 rounded-lg border border-red-300 dark:border-red-900/60 bg-red-50/40 dark:bg-red-950/20 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-[11px] text-zinc-500">
+                {locale === 'ar' ? 'رمز الاقتران المؤقت (صالح 5 دقائق)' : 'Single-Use Pairing Code (5 min TTL)'}
+              </div>
+              <div className="font-mono text-xl font-bold tracking-widest text-red-600 select-all">
+                {activeChallenge.code}
+              </div>
+            </div>
+            <div className="font-mono text-[11px] text-zinc-500">
+              Expires: {new Date(activeChallenge.expiresAt).toLocaleTimeString()}
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-2">
+          <div className="font-semibold text-zinc-900 dark:text-zinc-100">
+            {locale === 'ar' ? 'الأجهزة المقترنة' : 'Paired Companion Devices'} (
+            {pairingStatus?.devices?.filter((d) => !d.revoked).length ?? 0})
+          </div>
+          {!pairingStatus || pairingStatus.devices.length === 0 ? (
+            <p className="text-zinc-500">
+              No mobile devices paired yet. Generate a pairing code and enter it in the MK AI Mobile PWA More tab.
+            </p>
+          ) : (
+            <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {pairingStatus.devices.map((dev) => (
+                <div
+                  key={dev.deviceId}
+                  className="py-2.5 flex flex-wrap items-center justify-between gap-2"
+                >
+                  <div className="space-y-0.5">
+                    <div className="font-semibold text-zinc-900 dark:text-zinc-100">
+                      {dev.deviceName}{' '}
+                      <span className="font-mono text-[11px] text-zinc-500">
+                        ({dev.revoked ? 'Revoked' : 'Active'})
+                      </span>
+                    </div>
+                    <div className="font-mono text-[11px] text-zinc-500">
+                      ID: {dev.deviceId} · Paired {new Date(dev.pairedAt).toLocaleDateString()}
+                    </div>
+                  </div>
+                  {!dev.revoked && (
+                    <button
+                      type="button"
+                      disabled={busyAction !== null}
+                      onClick={() =>
+                        void runAction(`revoke-${dev.deviceId}`, async () => {
+                          const next = await getDesktopBridge()!.revokePairedDevice(dev.deviceId);
+                          setPairingStatus(next);
+                          setNotice(`Revoked companion device ${dev.deviceName}.`);
+                        })
+                      }
+                      className="px-2.5 py-1 rounded border border-red-300 dark:border-red-900 text-red-600 font-semibold hover:bg-red-50 dark:hover:bg-red-950/30"
+                    >
+                      Revoke
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </section>
     </div>
   );

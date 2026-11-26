@@ -1,11 +1,12 @@
 node_modules/
-build/
+build/python-bundle/
+build/wheelhouse/
 dist/
 coverage/
 .mk_ai_storage/
 dist-electron/
 release/
-build/python-bundle/
+dev-dist/
 .DS_Store
 *.log
 .env*

@@ -39,6 +39,10 @@ const api: MkDesktopApi = {
   exportDiagnosticReport: () => ipcRenderer.invoke('desktop:export-diagnostics'),
   saveLocalProjectMetadata: (project) => ipcRenderer.invoke('desktop:save-project-meta', project),
   listLocalProjectMetadata: () => ipcRenderer.invoke('desktop:list-project-meta'),
+  getPairingStatus: () => ipcRenderer.invoke('desktop:get-pairing-status'),
+  createPairingCode: () => ipcRenderer.invoke('desktop:create-pairing-code'),
+  setPairingRelayEnabled: (enabled) => ipcRenderer.invoke('desktop:set-pairing-relay', enabled),
+  revokePairedDevice: (deviceId) => ipcRenderer.invoke('desktop:revoke-paired-device', deviceId),
   onSetupProgress: (cb) => {
     const handler = (_event: Electron.IpcRendererEvent, state: SetupWizardState) => cb(state);
     ipcRenderer.on('setup:progress', handler);

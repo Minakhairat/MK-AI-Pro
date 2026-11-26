@@ -11,6 +11,7 @@ import { DependencyManager } from './services/dependencyManager.ts';
 import { LocalEngineManager } from './services/engineManager.ts';
 import { HardwareDetector } from './services/hardwareDetector.ts';
 import { DesktopModelDownloadManager } from './services/modelDownloadManager.ts';
+import { DesktopPairingManager } from './services/pairingManager.ts';
 import { PythonRuntimeManager } from './services/pythonRuntimeManager.ts';
 import { SetupWizardRunner } from './services/setupWizardRunner.ts';
 import { DesktopStorageManager, resolveConfinedPath } from './services/storageManager.ts';
@@ -32,6 +33,7 @@ let modelDownloadManager: DesktopModelDownloadManager;
 let updateManager: DesktopUpdateManager;
 let setupWizardRunner: SetupWizardRunner;
 let syncService: DesktopSyncService;
+let pairingManager: DesktopPairingManager;
 
 const SINGLE_INSTANCE_LOCK = app.requestSingleInstanceLock();
 if (!SINGLE_INSTANCE_LOCK) {
@@ -157,6 +159,41 @@ function initServices(): void {
     engine: engineManager,
   });
   syncService = new DesktopSyncService(storageManager);
+  pairingManager = new DesktopPairingManager({
+    userDataRoot,
+    relayContext: {
+      getEngineSummary: async () => {
+        const [eng, probe] = await Promise.all([
+          engineManager.getStatus(),
+          runtimeManager.inspectRuntime(),
+        ]);
+        const hw = await hardwareDetector.detect({
+          pythonExe: probe.pythonExecutable,
+          storageRoot: storageManager.getStorageRoot(),
+          forceRefresh: false,
+        });
+        return {
+          engineHealthy: eng.healthy,
+          engineVersion: eng.version,
+          hardware: {
+            cpuModel: hw.cpuModel,
+            totalRamGb: hw.totalRamGb,
+            nvidiaGpuAvailable: hw.nvidiaGpuAvailable,
+            nvidiaGpuName: hw.nvidiaGpuName,
+            pytorchCudaAvailable: hw.pytorchCudaAvailable,
+            recommendedProfile: hw.recommendedProfile,
+          },
+        };
+      },
+      proxyEngineJson: async (apiPath, opts) => {
+        const st = await engineManager.getStatus();
+        if (!st.healthy) {
+          await engineManager.start();
+        }
+        return engineManager.requestJson(apiPath, opts);
+      },
+    },
+  });
 }
 
 function registerIpcHandlers(): void {
@@ -363,6 +400,14 @@ function registerIpcHandlers(): void {
     storageManager.saveProjectMetadata(project)
   );
   registerSafeHandle('desktop:list-project-meta', () => storageManager.listProjectMetadata());
+  registerSafeHandle('desktop:get-pairing-status', () => pairingManager.getStatus());
+  registerSafeHandle('desktop:create-pairing-code', () => pairingManager.createPairingCode());
+  registerSafeHandle('desktop:set-pairing-relay', (enabled: boolean) =>
+    pairingManager.setRelayEnabled(Boolean(enabled))
+  );
+  registerSafeHandle('desktop:revoke-paired-device', (deviceId: string) =>
+    pairingManager.revokeDevice(deviceId)
+  );
 }
 
 function createWindow(): void {
@@ -431,10 +476,13 @@ let quittingCleanupDone = false;
 app.on('before-quit', (e) => {
   if (quittingCleanupDone) return;
   const cfg = storageManager?.getConfig();
-  if (cfg?.stopEngineOnExit && engineManager) {
+  if ((cfg?.stopEngineOnExit && engineManager) || pairingManager) {
     e.preventDefault();
     quittingCleanupDone = true;
-    void engineManager.stop().finally(() => {
+    const tasks: Promise<unknown>[] = [];
+    if (pairingManager) tasks.push(pairingManager.stopRelay().catch(() => {}));
+    if (cfg?.stopEngineOnExit && engineManager) tasks.push(engineManager.stop().catch(() => {}));
+    void Promise.all(tasks).finally(() => {
       app.quit();
     });
   }

@@ -1,11 +1,13 @@
 import React from 'react';
-import { ArrowLeft, ArrowRight, Menu, Plus } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Bell, Menu, Plus } from 'lucide-react';
 import { useI18n } from '../../contexts/I18nContext';
+import { useNotifications } from '../../contexts/NotificationContext';
 
 interface TopBarProps {
   breadcrumbs: string[];
   onOpenMobileMenu: () => void;
   onCreateProject: () => void;
+  onOpenNotifications?: () => void;
   showBackButton?: boolean;
   onBack?: () => void;
 }
@@ -14,10 +16,12 @@ export function TopBar({
   breadcrumbs,
   onOpenMobileMenu,
   onCreateProject,
+  onOpenNotifications,
   showBackButton,
   onBack,
 }: TopBarProps) {
   const { t, dir } = useI18n();
+  const { unreadCount } = useNotifications();
   const BackIcon = dir === 'rtl' ? ArrowRight : ArrowLeft;
 
   return (
@@ -68,14 +72,32 @@ export function TopBar({
         </nav>
       </div>
 
-      <button
-        type="button"
-        onClick={onCreateProject}
-        className="inline-flex items-center gap-2 px-4 py-2 text-xs sm:text-sm font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors whitespace-nowrap shrink-0"
-      >
-        <Plus className="w-4 h-4" />
-        <span>{t.topBar.newProject}</span>
-      </button>
+      <div className="flex items-center gap-2 shrink-0">
+        {onOpenNotifications && (
+          <button
+            type="button"
+            onClick={onOpenNotifications}
+            aria-label="Notifications"
+            className="relative min-w-[40px] min-h-[40px] inline-flex items-center justify-center rounded-lg border border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-900"
+          >
+            <Bell className="w-4 h-4" />
+            {unreadCount > 0 && (
+              <span className="absolute -top-1 -end-1 min-w-[16px] h-4 px-1 rounded bg-red-600 text-white text-[10px] font-mono font-bold flex items-center justify-center tabular-nums">
+                {unreadCount > 9 ? '9+' : unreadCount}
+              </span>
+            )}
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={onCreateProject}
+          className="inline-flex items-center gap-2 px-4 py-2 text-xs sm:text-sm font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors whitespace-nowrap shrink-0"
+        >
+          <Plus className="w-4 h-4" />
+          <span>{t.topBar.newProject}</span>
+        </button>
+      </div>
     </header>
   );
 }
