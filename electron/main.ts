@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import type {
@@ -15,10 +15,15 @@ import { PythonRuntimeManager } from './services/pythonRuntimeManager.ts';
 import { SetupWizardRunner } from './services/setupWizardRunner.ts';
 import { DesktopStorageManager, resolveConfinedPath } from './services/storageManager.ts';
 import { DesktopSyncService } from './services/syncService.ts';
+import {
+  EngineTokenManager,
+  createElectronSafeStorageBackend,
+} from './services/tokenManager.ts';
 import { DesktopUpdateManager } from './services/updateManager.ts';
 
 let mainWindow: BrowserWindow | null = null;
 let storageManager: DesktopStorageManager;
+let tokenManager: EngineTokenManager;
 let runtimeManager: PythonRuntimeManager;
 let hardwareDetector: HardwareDetector;
 let dependencyManager: DependencyManager;
@@ -95,7 +100,17 @@ function initServices(): void {
   const manifestsDir = path.join(aiEngineDir, 'manifests');
   const versionsManifestPath = path.join(manifestsDir, 'versions.json');
 
+  // Remove any inherited engine token from Electron parent env so renderer/dev tools never see it
+  delete process.env.MK_ENGINE_TOKEN;
+
   storageManager = new DesktopStorageManager(userDataRoot);
+  tokenManager = new EngineTokenManager({
+    userDataRoot,
+    backend: createElectronSafeStorageBackend(safeStorage),
+  });
+  tokenManager.ensureToken();
+  storageManager.setRedactor((line) => tokenManager.redactSecret(line));
+
   runtimeManager = new PythonRuntimeManager({
     userDataRoot,
     bundledRuntimeDir: resolveBundledPythonDir(),
@@ -111,6 +126,7 @@ function initServices(): void {
     storage: storageManager,
     runtime: runtimeManager,
     aiEngineDir,
+    tokenManager,
   });
   modelDownloadManager = new DesktopModelDownloadManager(storageManager);
   updateManager = new DesktopUpdateManager({
@@ -225,6 +241,8 @@ function registerIpcHandlers(): void {
   registerSafeHandle('desktop:get-setup-wizard-state', () => setupWizardRunner.getState());
 
   registerSafeHandle('desktop:get-engine-status', () => engineManager.getStatus());
+  registerSafeHandle('desktop:get-engine-token-status', () => engineManager.getTokenStatus());
+  registerSafeHandle('desktop:rotate-engine-token', () => engineManager.rotateAndSyncToken());
   registerSafeHandle('desktop:restart-engine', () => engineManager.restart());
   registerSafeHandle('desktop:stop-engine', () => engineManager.stop());
 
@@ -242,7 +260,7 @@ function registerIpcHandlers(): void {
     if (!st.healthy) {
       await engineManager.start();
     }
-    return engineManager.requestJson('/training/jobs', {
+    return engineManager.requestJson('/jobs/train', {
       method: 'POST',
       body: {
         ...payload,
@@ -253,14 +271,14 @@ function registerIpcHandlers(): void {
   });
 
   registerSafeHandle('desktop:fetch-training-job', (jobId: string) =>
-    engineManager.requestJson(`/training/jobs/${encodeURIComponent(jobId)}`)
+    engineManager.requestJson(`/jobs/${encodeURIComponent(jobId)}`)
   );
 
   registerSafeHandle(
     'desktop:control-training-job',
     (params: { jobId: string; action: 'pause' | 'resume' | 'cancel' }) =>
       engineManager.requestJson(
-        `/training/jobs/${encodeURIComponent(params.jobId)}/${params.action}`,
+        `/jobs/${encodeURIComponent(params.jobId)}/${params.action}`,
         { method: 'POST' }
       )
   );
@@ -313,11 +331,12 @@ function registerIpcHandlers(): void {
       pythonRuntime: probe,
       hardware: hw,
       engine,
+      tokenSecurity: engineManager.getTokenStatus(),
       storage,
       sync: syncInfo,
       wizard,
     };
-    const reportJson = JSON.stringify(reportObj, null, 2);
+    const reportJson = tokenManager.redactSecret(JSON.stringify(reportObj, null, 2));
     const outPath = resolveConfinedPath(
       storageManager.getSubdir('logs'),
       `mk-ai-diagnostics-${Date.now()}.json`

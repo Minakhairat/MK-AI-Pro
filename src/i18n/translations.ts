@@ -686,6 +686,13 @@ export interface TranslationDictionary {
       rollbackWeightBtn: string;
       conflictsTitle: string;
       noConflictsLabel: string;
+      tokenSecurityLabel: string;
+      tokenProtectedOs: string;
+      tokenProtectedLocal: string;
+      tokenFingerprintLabel: string;
+      rotateTokenBtn: string;
+      tokenRotatedNotice: string;
+      tokenRepairsLabel: string;
     };
     setupWizard: {
       title: string;
@@ -1408,6 +1415,13 @@ export interface TranslationDictionary {
       rollbackWeightBtn: 'Rollback',
       conflictsTitle: 'Sync Conflict Inspection',
       noConflictsLabel: 'Zero sync conflicts detected between local MK-AI-Data and Cloud workspace.',
+      tokenSecurityLabel: 'Engine Credential Store',
+      tokenProtectedOs: 'OS Keychain / DPAPI Encrypted',
+      tokenProtectedLocal: 'Restricted Local AES-GCM Store',
+      tokenFingerprintLabel: 'Fingerprint',
+      rotateTokenBtn: 'Rotate Engine Token',
+      tokenRotatedNotice: 'Engine security token rotated and synchronized.',
+      tokenRepairsLabel: 'Auto-repairs',
     },
     setupWizard: {
       title: 'MK AI Desktop — First-Launch Setup & Verification',
@@ -2128,6 +2142,13 @@ export interface TranslationDictionary {
       rollbackWeightBtn: 'استرجاع السابق',
       conflictsTitle: 'فحص تعارض المزامنة',
       noConflictsLabel: 'لا توجد تعارضات مزامنة بين التخزين المحلي MK-AI-Data والسحابة.',
+      tokenSecurityLabel: 'حماية رمز المحرك',
+      tokenProtectedOs: 'مشفر عبر نظام التشغيل (DPAPI / Keychain)',
+      tokenProtectedLocal: 'تخزين محلي مشفر (AES-GCM 0600)',
+      tokenFingerprintLabel: 'البصمة',
+      rotateTokenBtn: 'تدوير رمز المحرك',
+      tokenRotatedNotice: 'تم تدوير رمز أمان المحرك ومزامنته بنجاح.',
+      tokenRepairsLabel: 'الإصلاحات التلقائية',
     },
     setupWizard: {
       title: 'MK AI Desktop — معالج التهيئة والتحقق التلقائي لأول تشغيل',

@@ -7,6 +7,7 @@ import {
   FileDown,
   FolderOpen,
   HardDrive,
+  KeyRound,
   Monitor,
   Power,
   RefreshCw,
@@ -24,6 +25,7 @@ import type {
   DesktopRuntimeInfo,
   DesktopWeightRecord,
   EngineRuntimeStatus,
+  EngineTokenStatus,
   HardwareReport,
   StorageSubdirName,
   StorageUsageSummary,
@@ -49,6 +51,7 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
   const [runtimeInfo, setRuntimeInfo] = useState<DesktopRuntimeInfo | null>(null);
   const [config, setConfig] = useState<DesktopConfig | null>(null);
   const [engineStatus, setEngineStatus] = useState<EngineRuntimeStatus | null>(null);
+  const [tokenStatus, setTokenStatus] = useState<EngineTokenStatus | null>(null);
   const [hardware, setHardware] = useState<HardwareReport | null>(null);
   const [storageUsage, setStorageUsage] = useState<StorageUsageSummary | null>(null);
   const [localWeights, setLocalWeights] = useState<DesktopWeightRecord[]>([]);
@@ -62,10 +65,11 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
     const bridge = getDesktopBridge();
     if (!bridge) return;
     try {
-      const [info, cfg, eng, hw, usage, weights, updates] = await Promise.all([
+      const [info, cfg, eng, tok, hw, usage, weights, updates] = await Promise.all([
         bridge.getRuntimeInfo(),
         bridge.getConfig(),
         bridge.getEngineStatus(),
+        bridge.getEngineTokenStatus(),
         bridge.detectHardware(forceHardware),
         bridge.getStorageUsage(),
         bridge.listLocalWeights(),
@@ -74,6 +78,7 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
       setRuntimeInfo(info);
       setConfig(cfg);
       setEngineStatus(eng);
+      setTokenStatus(tok);
       setHardware(hw);
       setStorageUsage(usage);
       setLocalWeights(weights);
@@ -331,8 +336,20 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
             <div>
               Engine Version: {engineStatus?.version ?? runtimeInfo?.engineVersion ?? '—'}
             </div>
+            <div>
+              {t.desktopView.tokenSecurityLabel}:{' '}
+              {(tokenStatus ?? engineStatus?.tokenStatus)?.protectionMode === 'os_dpapi_keychain'
+                ? t.desktopView.tokenProtectedOs
+                : t.desktopView.tokenProtectedLocal}
+            </div>
+            <div>
+              {t.desktopView.tokenFingerprintLabel}:{' '}
+              {(tokenStatus ?? engineStatus?.tokenStatus)?.fingerprintSha256Prefix ?? '—'} ·{' '}
+              {t.desktopView.tokenRepairsLabel}:{' '}
+              {(tokenStatus ?? engineStatus?.tokenStatus)?.repairCount ?? 0}
+            </div>
           </div>
-          <div className="flex items-center gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2 pt-1">
             <button
               type="button"
               disabled={busyAction !== null}
@@ -363,6 +380,25 @@ export function DesktopStatusView({ onOpenWizard }: DesktopStatusViewProps) {
             >
               <Power className="w-3.5 h-3.5" />
               <span>{t.desktopView.stopEngineBtn}</span>
+            </button>
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() =>
+                void runAction('rotateToken', async () => {
+                  const res = await getDesktopBridge()!.rotateEngineToken();
+                  setTokenStatus(res.status);
+                  const eng = await getDesktopBridge()!.getEngineStatus();
+                  setEngineStatus(eng);
+                  setNotice(
+                    `${t.desktopView.tokenRotatedNotice} (${res.status.fingerprintSha256Prefix})`
+                  );
+                })
+              }
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 disabled:opacity-45"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              <span>{t.desktopView.rotateTokenBtn}</span>
             </button>
           </div>
         </section>

@@ -92,9 +92,29 @@ CHECKPOINT_ROOT.mkdir(parents=True, exist_ok=True)
 WEIGHTS_ROOT.mkdir(parents=True, exist_ok=True)
 JOB_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{1,128}$")
 ENGINE_TOKEN = os.environ.get("MK_ENGINE_TOKEN", "").strip()
+TOKEN_LOCK = threading.Lock()
 ALLOWED_LOCAL_ORIGIN_RE = re.compile(
     r"^(https?://(127\.0\.0\.1|localhost)(:\d+)?|file://|app://.*|null)$", re.IGNORECASE
 )
+
+
+def _get_engine_token() -> str:
+    with TOKEN_LOCK:
+        return ENGINE_TOKEN
+
+
+def _set_engine_token(next_token: str) -> None:
+    global ENGINE_TOKEN
+    with TOKEN_LOCK:
+        ENGINE_TOKEN = next_token.strip()
+
+
+def _is_valid_bearer_header(auth_header: str) -> bool:
+    current = _get_engine_token()
+    if len(current) < 16 or not auth_header.startswith("Bearer "):
+        return False
+    provided = auth_header[7:].strip()
+    return secrets.compare_digest(provided, current)
 
 
 @app.middleware("http")
@@ -103,13 +123,16 @@ async def local_security_middleware(request: Request, call_next: Any):
     if origin and not ALLOWED_LOCAL_ORIGIN_RE.match(origin.strip()):
         return JSONResponse(status_code=403, content={"detail": "Disallowed origin for local AI Engine."})
 
-    if ENGINE_TOKEN and request.url.path != "/health":
+    if request.url.path != "/health":
+        current = _get_engine_token()
+        if len(current) < 16:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Local engine security token is missing or uninitialized."},
+            )
         auth_header = request.headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"detail": "Missing local engine bearer token."})
-        provided = auth_header[7:].strip()
-        if not secrets.compare_digest(provided, ENGINE_TOKEN):
-            return JSONResponse(status_code=401, content={"detail": "Invalid local engine bearer token."})
+        if not _is_valid_bearer_header(auth_header):
+            return JSONResponse(status_code=401, content={"detail": "Missing or invalid local engine bearer token."})
 
     return await call_next(request)
 
@@ -634,32 +657,49 @@ def _run_python_training_worker(job: JobState) -> None:
         job.logs.append(f"Training failed: {job.error_message}")
 
 
+class RotateTokenRequest(BaseModel):
+    new_token: str = Field(..., min_length=32, max_length=256)
+
+
 @app.get("/health")
 def health(request: Request) -> Dict[str, Any]:
-    authorized = not ENGINE_TOKEN
-    if ENGINE_TOKEN:
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
-            authorized = secrets.compare_digest(auth_header[7:].strip(), ENGINE_TOKEN)
+    current_token = _get_engine_token()
+    token_configured = len(current_token) >= 16
+    authorized = _is_valid_bearer_header(request.headers.get("authorization", ""))
+
+    base_payload: Dict[str, Any] = {
+        "status": "online" if token_configured else "token_missing",
+        "service": "mk-ai-training-engine",
+        "version": ENGINE_VERSION,
+        "token_protected": token_configured,
+        "token_configured": token_configured,
+        "uptime_seconds": round(time.time() - START_TIME, 2),
+    }
 
     if not authorized:
-        return {
-            "status": "online",
-            "service": "mk-ai-training-engine",
-            "version": ENGINE_VERSION,
-            "token_protected": True,
-            "uptime_seconds": round(time.time() - START_TIME, 2),
-        }
+        return base_payload
 
     hw = detect_hardware()
     return {
-        "status": "online",
-        "service": "mk-ai-training-engine",
-        "version": ENGINE_VERSION,
+        **base_payload,
         "phase": "v2_desktop_ready",
-        "token_protected": bool(ENGINE_TOKEN),
-        "uptime_seconds": round(time.time() - START_TIME, 2),
         "hardware": hw.model_dump(),
+    }
+
+
+@app.post("/security/rotate-token")
+def rotate_engine_token(req: RotateTokenRequest) -> Dict[str, Any]:
+    candidate = req.new_token.strip()
+    if len(candidate) < 32 or not re.match(r"^[A-Za-z0-9_\-]+$", candidate) or len(set(candidate)) < 8:
+        raise HTTPException(
+            status_code=400,
+            detail="Replacement token does not meet security format requirements.",
+        )
+    _set_engine_token(candidate)
+    return {
+        "rotated": True,
+        "token_protected": True,
+        "rotated_at": time.time(),
     }
 
 

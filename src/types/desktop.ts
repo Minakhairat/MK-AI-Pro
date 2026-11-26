@@ -117,6 +117,18 @@ export interface DependencyInstallProgress {
   logs: string[];
 }
 
+export interface EngineTokenStatus {
+  configured: boolean;
+  tokenProtected: boolean;
+  protectionMode: 'os_dpapi_keychain' | 'restricted_local_store';
+  fingerprintSha256Prefix: string;
+  createdAt: string | null;
+  rotatedAt: string | null;
+  lastVerifiedAt: string | null;
+  lastRepairReason: string | null;
+  repairCount: number;
+}
+
 export interface EngineRuntimeStatus {
   running: boolean;
   healthy: boolean;
@@ -128,6 +140,7 @@ export interface EngineRuntimeStatus {
   lastError: string | null;
   tokenProtected: boolean;
   bindHost: string;
+  tokenStatus?: EngineTokenStatus;
 }
 
 export type StorageSubdirName =
@@ -251,6 +264,12 @@ export interface MkDesktopApi {
   runSetupWizard: (opts?: { profile?: ExecutionProfile }) => Promise<SetupWizardState>;
   getSetupWizardState: () => Promise<SetupWizardState>;
   getEngineStatus: () => Promise<EngineRuntimeStatus>;
+  getEngineTokenStatus: () => Promise<EngineTokenStatus>;
+  rotateEngineToken: () => Promise<{
+    status: EngineTokenStatus;
+    engineSynced: boolean;
+    restarted: boolean;
+  }>;
   restartEngine: () => Promise<EngineRuntimeStatus>;
   stopEngine: () => Promise<EngineRuntimeStatus>;
   probeLocalEngineCapabilities: () => Promise<Record<string, unknown>>;

@@ -345,12 +345,15 @@ export class SetupWizardRunner {
     // Step 8: FastAPI Service Startup
     const engineRes = await runStep('fastapi_start', async () => {
       const st = await this.engine.start();
-      if (!st.healthy || !st.port) {
-        throw new Error(st.lastError || 'FastAPI local engine did not pass health check.');
+      if (!st.healthy || !st.port || !st.tokenProtected) {
+        throw new Error(
+          st.lastError || 'FastAPI local engine did not pass authenticated health verification.'
+        );
       }
+      const fp = st.tokenStatus?.fingerprintSha256Prefix || 'protected';
       return {
         status: 'passed',
-        detail: `Local FastAPI Engine listening on 127.0.0.1:${st.port} (PID ${st.pid}, token-protected)`,
+        detail: `Local FastAPI Engine listening on 127.0.0.1:${st.port} (PID ${st.pid}, ${fp})`,
         value: st,
       };
     });

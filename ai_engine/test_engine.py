@@ -39,14 +39,30 @@ class TestMkAiEngine(unittest.TestCase):
             self.skipTest("fastapi TestClient not installed in current Python interpreter")
             return
 
-        prev_token = engine_main.ENGINE_TOKEN
-        engine_main.ENGINE_TOKEN = "mk-test-secret-token"
+        prev_token = engine_main._get_engine_token()
         try:
             client = TestClient(engine_main.app)
-            # /health without token returns minimal status without leaking full paths
-            r_health = client.get("/health")
-            self.assertEqual(r_health.status_code, 200)
-            self.assertTrue(r_health.json().get("token_protected"))
+
+            # Fail closed with 503 if token is empty/missing
+            engine_main._set_engine_token("")
+            r_missing_health = client.get("/health")
+            self.assertEqual(r_missing_health.status_code, 200)
+            self.assertFalse(r_missing_health.json().get("token_configured"))
+            self.assertNotIn("hardware", r_missing_health.json())
+
+            r_missing_caps = client.get("/capabilities")
+            self.assertEqual(r_missing_caps.status_code, 503)
+
+            # Active valid token enables protected endpoints
+            initial_token = "mk_test_initial_secure_token_1234567890"
+            engine_main._set_engine_token(initial_token)
+
+            r_health_authed = client.get(
+                "/health", headers={"Authorization": f"Bearer {initial_token}"}
+            )
+            self.assertEqual(r_health_authed.status_code, 200)
+            self.assertTrue(r_health_authed.json().get("token_protected"))
+            self.assertIn("hardware", r_health_authed.json())
 
             # /capabilities without token must return 401
             r_unauth = client.get("/capabilities")
@@ -56,7 +72,7 @@ class TestMkAiEngine(unittest.TestCase):
             r_bad_origin = client.get(
                 "/capabilities",
                 headers={
-                    "Authorization": "Bearer mk-test-secret-token",
+                    "Authorization": f"Bearer {initial_token}",
                     "Origin": "https://evil.example.com",
                 },
             )
@@ -66,14 +82,34 @@ class TestMkAiEngine(unittest.TestCase):
             r_ok = client.get(
                 "/capabilities",
                 headers={
-                    "Authorization": "Bearer mk-test-secret-token",
+                    "Authorization": f"Bearer {initial_token}",
                     "Origin": "http://127.0.0.1:3000",
                 },
             )
             self.assertEqual(r_ok.status_code, 200)
             self.assertIn("supported_architectures", r_ok.json())
+
+            # Live token rotation invalidates previous token and activates new token immediately
+            rotated_token = "mk_test_rotated_secure_token_0987654321"
+            r_rot = client.post(
+                "/security/rotate-token",
+                headers={"Authorization": f"Bearer {initial_token}"},
+                json={"new_token": rotated_token},
+            )
+            self.assertEqual(r_rot.status_code, 200)
+            self.assertTrue(r_rot.json().get("rotated"))
+
+            r_old_rejected = client.get(
+                "/capabilities", headers={"Authorization": f"Bearer {initial_token}"}
+            )
+            self.assertEqual(r_old_rejected.status_code, 401)
+
+            r_new_accepted = client.get(
+                "/capabilities", headers={"Authorization": f"Bearer {rotated_token}"}
+            )
+            self.assertEqual(r_new_accepted.status_code, 200)
         finally:
-            engine_main.ENGINE_TOKEN = prev_token
+            engine_main._set_engine_token(prev_token)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -24,6 +25,11 @@ import {
   resolveConfinedPath,
 } from '../electron/services/storageManager.ts';
 import { DesktopSyncService, detectSyncConflicts } from '../electron/services/syncService.ts';
+import {
+  EngineTokenManager,
+  computeTokenFingerprint,
+  isValidEngineToken,
+} from '../electron/services/tokenManager.ts';
 import { compareSemver } from '../electron/services/updateManager.ts';
 import { evaluateModelHardwareCompatibility } from '../src/lib/hardwareCompatibility.ts';
 import { MODEL_CATALOG } from '../src/lib/modelRegistry.ts';
@@ -266,4 +272,157 @@ test('evaluateModelHardwareCompatibility accurately flags CPU-only warnings and 
   const yoloBlocked = evaluateModelHardwareCompatibility(yolo, cpuNoTorch);
   assert.equal(yoloBlocked.compatible, false);
   assert.equal(yoloBlocked.severity, 'blocked');
+});
+
+test('EngineTokenManager auto-provisions, encrypts, repairs corrupted stores, rotates without leaking plaintext, and redacts logs', () => {
+  const root = makeTempWorkspace('mk-ai-token-test-');
+  try {
+    const userData = path.join(root, 'userData');
+    const storage = new DesktopStorageManager(userData, path.join(root, 'MK-AI-Data'));
+    const manager1 = new EngineTokenManager({ userDataRoot: userData });
+    storage.setRedactor((line) => manager1.redactSecret(line));
+
+    // 1. Auto-generate cryptographically random token on first launch
+    const first = manager1.ensureToken();
+    assert.equal(first.created, true);
+    assert.equal(first.repaired, false);
+    assert.equal(isValidEngineToken(first.token), true);
+    assert.equal(first.status.tokenProtected, true);
+    assert.equal(first.status.fingerprintSha256Prefix, computeTokenFingerprint(first.token));
+
+    // Public status and stored file must never contain plaintext secret
+    const credFile = path.join(userData, 'security', 'mk-engine-credential.dat');
+    assert.equal(fs.existsSync(credFile), true);
+    const credRaw = fs.readFileSync(credFile, 'utf8');
+    assert.equal(credRaw.includes(first.token), false);
+    assert.equal(JSON.stringify(first.status).includes(first.token), false);
+
+    // 2. Reload persisted token from encrypted store in fresh instance
+    const manager2 = new EngineTokenManager({ userDataRoot: userData });
+    const reloaded = manager2.ensureToken();
+    assert.equal(reloaded.token, first.token);
+    assert.equal(reloaded.created, false);
+    assert.equal(reloaded.repaired, false);
+
+    // 3. Log redaction scrubs raw token and Bearer headers
+    storage.appendLog(
+      'ai-engine.log',
+      `Header Authorization: Bearer ${first.token} MK_ENGINE_TOKEN=${first.token}`
+    );
+    const logContents = fs.readFileSync(path.join(storage.getSubdir('logs'), 'ai-engine.log'), 'utf8');
+    assert.equal(logContents.includes(first.token), false);
+    assert.match(logContents, /\[REDACTED_ENGINE_TOKEN\]/);
+
+    // 4. Corrupt credential file -> automatic repair regenerates valid token
+    fs.writeFileSync(credFile, '{ "version": 1, "encryptedPayloadBase64": "corrupt!!!" }', 'utf8');
+    const manager3 = new EngineTokenManager({ userDataRoot: userData });
+    const repaired = manager3.ensureToken();
+    assert.equal(repaired.repaired, true);
+    assert.equal(repaired.status.repairCount, 1);
+    assert.notEqual(repaired.token, first.token);
+    assert.equal(isValidEngineToken(repaired.token), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('LocalEngineManager live-synchronizes token rotation with FastAPI server and auto-repairs on 401 mismatch', async () => {
+  const root = makeTempWorkspace('mk-ai-engine-rot-test-');
+  let server: http.Server | null = null;
+  try {
+    const userData = path.join(root, 'userData');
+    const dataRoot = path.join(root, 'MK-AI-Data');
+    const manifestsDir = path.join(process.cwd(), 'ai_engine', 'manifests');
+    const storage = new DesktopStorageManager(userData, dataRoot);
+    const runtime = new PythonRuntimeManager({
+      userDataRoot: userData,
+      versionsManifestPath: path.join(manifestsDir, 'versions.json'),
+    });
+    const tokenManager = new EngineTokenManager({ userDataRoot: userData });
+    const initial = tokenManager.ensureToken();
+
+    let serverActiveToken = initial.token;
+    server = http.createServer((req, res) => {
+      const auth = req.headers.authorization || '';
+      const authed = auth === `Bearer ${serverActiveToken}`;
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        if (req.url === '/health') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              status: 'online',
+              version: '2.1.0-test',
+              token_protected: true,
+              token_configured: true,
+              ...(authed ? { hardware: { cpu_count: 4 } } : {}),
+            })
+          );
+          return;
+        }
+        if (!authed) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ detail: 'Missing or invalid local engine bearer token.' }));
+          return;
+        }
+        if (req.url === '/security/rotate-token' && req.method === 'POST') {
+          const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { new_token: string };
+          serverActiveToken = parsed.new_token;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ rotated: true, token_protected: true }));
+          return;
+        }
+        if (req.url === '/capabilities') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ supported_architectures: ['mobilenet_v2'] }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+    });
+
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    assert.ok(addr && typeof addr === 'object');
+
+    const engine = new LocalEngineManager({
+      storage,
+      runtime,
+      aiEngineDir: path.join(process.cwd(), 'ai_engine'),
+      tokenManager,
+    });
+    engine.setPortForTesting(addr.port);
+
+    // Health check validates token protection cleanly
+    const healthBefore = await engine.checkHealth();
+    assert.equal(healthBefore.healthy, true);
+    assert.equal(healthBefore.tokenConfigured, true);
+    assert.ok(healthBefore.hardware);
+
+    // Rotate and live-sync token with running engine server
+    const rotated = await engine.rotateAndSyncToken();
+    assert.equal(rotated.engineSynced, true);
+    assert.equal(rotated.restarted, false);
+    assert.notEqual(
+      rotated.status.fingerprintSha256Prefix,
+      initial.status.fingerprintSha256Prefix
+    );
+
+    // Authenticated request works immediately using newly rotated token
+    const caps = await engine.requestJson<{ supported_architectures: string[] }>('/capabilities');
+    assert.deepEqual(caps.supported_architectures, ['mobilenet_v2']);
+
+    // Simulate external/out-of-sync server rejecting token with 401 -> automatic token repair triggers
+    serverActiveToken = 'different_desynced_token_value_1234567890';
+    await assert.rejects(() => engine.requestJson('/capabilities'), /bearer token|Python runtime/i);
+    assert.equal(engine.getTokenStatus().repairCount, 1);
+    assert.equal(engine.getTokenStatus().lastRepairReason, 'rejected_or_missing_engine_token');
+  } finally {
+    if (server) {
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

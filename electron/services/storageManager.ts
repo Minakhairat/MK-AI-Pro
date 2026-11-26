@@ -87,6 +87,7 @@ function computeDirSize(dirPath: string): { bytes: number; fileCount: number } {
 export class DesktopStorageManager {
   private configPath: string;
   private config: DesktopConfig;
+  private redactor: ((line: string) => string) | null = null;
 
   constructor(configDir: string, defaultStorageRoot?: string) {
     fs.mkdirSync(configDir, { recursive: true });
@@ -95,6 +96,10 @@ export class DesktopStorageManager {
     this.config = this.loadOrInitConfig(resolvedDefault);
     process.env.LOCAL_STORAGE_DIR = this.config.storageRoot;
     this.ensureStructure();
+  }
+
+  setRedactor(fn: (line: string) => string): void {
+    this.redactor = fn;
   }
 
   private loadOrInitConfig(defaultStorageRoot: string): DesktopConfig {
@@ -250,8 +255,9 @@ export class DesktopStorageManager {
 
   appendLog(filename: string, line: string): void {
     this.ensureStructure();
+    const safeLine = this.redactor ? this.redactor(line) : line;
     const logPath = resolveConfinedPath(this.getSubdir('logs'), sanitizeSegment(filename, 'desktop.log'));
-    fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${line}\n`, 'utf8');
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${safeLine}\n`, 'utf8');
   }
 
   saveProjectMetadata(project: Record<string, unknown>): { ok: boolean } {
